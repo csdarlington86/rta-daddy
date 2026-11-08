@@ -1,4 +1,4 @@
-# RTA Daddy (clone) — two-input real-time analyzer
+# RTA Daddy — two-input real-time analyzer
 
 A browser-based real-time analyzer built as a close functional clone of the **Pro** tier of
 Smaart RTA, **minus SPL metering**, made to run full-screen on Android tablets.
