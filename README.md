@@ -175,6 +175,16 @@ git push origin master               # external F: backup
 Bump `CACHE` in `sw.js` (`rta-daddy-v21` at the time of writing) whenever the app
 shell changes, or installed PWAs may keep serving the old bundle.
 
+Or do the checks, build, commit, and both backup pushes in one command:
+
+```bash
+node tools/publish.js "Describe the change"
+```
+
+Use `node tools/publish.js --dry-run "Describe the change"` to run the checks and
+build without committing or pushing. The script still does not deploy the live
+site.
+
 Then publish the rebuilt `deploy/manifest.json` to the existing Freebuff Sites
 production environment at <https://rtadaddy.freebuff.page>. The GitHub Actions
 workflow in `.github/workflows/build.yml` checks syntax and rebuilds `deploy/dist`
@@ -268,6 +278,7 @@ rta/
   tools/save-server.js  local server that writes the generator's PNGs
   tools/serve.js        tiny static server for local/LAN testing
   tools/build-dist.js   builds + validates deploy/dist
+  tools/publish.js      validates, builds, commits, pushes both backups
   tools/test-hits.js    runs the counter Worker against a local SQLite shim
 ```
 
