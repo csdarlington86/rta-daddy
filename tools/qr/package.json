@@ -1,0 +1,9 @@
+{
+  "name": "rta-qr-tools",
+  "private": true,
+  "description": "Build-time QR generator for RTA Daddy. Not part of the shipped app.",
+  "version": "1.0.0",
+  "dependencies": {
+    "qrcode": "^1.5.4"
+  }
+}

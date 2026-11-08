@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>OG card generator</title></head>
+<body style="margin:0;background:#111;color:#ddd;font:13px ui-monospace,monospace">
+<canvas id="c" width="1200" height="630" style="display:block"></canvas>
+<pre id="out" style="padding:8px">drawing…</pre>
+<script>
+const W = 1200, H = 630;
+const c = document.getElementById('c');
+const g = c.getContext('2d');
+const out = document.getElementById('out');
+const GREEN = '#12b312', BRIGHT = '#00e676', LIGHT = '#5aeb5a';
+
+/* ---- background ---- */
+const bg = g.createLinearGradient(0, 0, W, H);
+bg.addColorStop(0, '#0b1210');
+bg.addColorStop(1, '#05070a');
+g.fillStyle = bg;
+g.fillRect(0, 0, W, H);
+
+const glow = g.createRadialGradient(990, 300, 20, 990, 300, 460);
+glow.addColorStop(0, 'rgba(0,230,118,0.16)');
+glow.addColorStop(1, 'rgba(0,230,118,0)');
+g.fillStyle = glow;
+g.fillRect(0, 0, W, H);
+
+g.strokeStyle = 'rgba(255,255,255,0.045)';
+g.lineWidth = 1;
+for (let x = 0; x <= W; x += 60) { g.beginPath(); g.moveTo(x + 0.5, 0); g.lineTo(x + 0.5, H); g.stroke(); }
+for (let y = 0; y <= H; y += 60) { g.beginPath(); g.moveTo(0, y + 0.5); g.lineTo(W, y + 0.5); g.stroke(); }
+
+/* ---- the app icon, redrawn as vector so no image asset is needed ---- */
+function drawIcon(x, y, size) {
+  const r = size * 0.2;
+  g.save();
+  g.beginPath();
+  g.moveTo(x + r, y);
+  g.arcTo(x + size, y, x + size, y + size, r);
+  g.arcTo(x + size, y + size, x, y + size, r);
+  g.arcTo(x, y + size, x, y, r);
+  g.arcTo(x, y, x + size, y, r);
+  g.closePath();
+  g.fillStyle = '#0c110e';
+  g.fill();
+  g.strokeStyle = 'rgba(0,230,118,0.35)';
+  g.lineWidth = size * 0.012;
+  g.stroke();
+
+  const n = 11;
+  const pad = size * 0.13;
+  const gap = size * 0.022;
+  const bw = (size - pad * 2 - gap * (n - 1)) / n;
+  const base = y + size - pad;
+  const peak = size - pad * 2;
+  const frac = [0.26, 0.44, 0.63, 0.83, 0.93, 0.75, 0.59, 0.43, 0.31, 0.22, 0.16];
+  for (let i = 0; i < n; i++) {
+    const h = peak * frac[i];
+    const bx = x + pad + i * (bw + gap);
+    g.fillStyle = GREEN;
+    g.fillRect(bx, base - h, bw, h);
+    g.fillStyle = LIGHT;
+    g.fillRect(bx, base - h, bw, Math.max(2, size * 0.012));
+  }
+  g.restore();
+}
+drawIcon(872, 168, 268);
+
+/* ---- wordmark ---- */
+g.textBaseline = 'alphabetic';
+g.fillStyle = '#ffffff';
+g.font = '300 100px "Segoe UI", Helvetica, Arial, sans-serif';
+g.fillText('RTA', 80, 246);
+const rtaW = g.measureText('RTA').width;
+g.fillStyle = BRIGHT;
+g.font = '600 54px "Segoe UI", Helvetica, Arial, sans-serif';
+g.fillText('DADDY', 80 + rtaW + 16, 242);
+
+/* ---- tagline ---- */
+g.fillStyle = '#eafff2';
+g.font = '700 42px "Segoe UI", Helvetica, Arial, sans-serif';
+g.fillText('100% Free RTA and Spectrograph', 80, 318);
+
+/* ---- feature chips ---- */
+const chips = ['1/48 oct RTA', 'Spectrograph', 'Target curves', 'Captured traces'];
+g.font = '600 24px "Segoe UI", Helvetica, Arial, sans-serif';
+let cx = 80, cy = 366;
+const maxX = 800, chipH = 50, padX = 22, gapC = 12;
+for (const label of chips) {
+  const tw = g.measureText(label).width;
+  const cw = tw + padX * 2;
+  if (cx + cw > maxX) { cx = 80; cy += chipH + 12; }
+  const r = chipH / 2;
+  g.beginPath();
+  g.moveTo(cx + r, cy);
+  g.arcTo(cx + cw, cy, cx + cw, cy + chipH, r);
+  g.arcTo(cx + cw, cy + chipH, cx, cy + chipH, r);
+  g.arcTo(cx, cy + chipH, cx, cy, r);
+  g.arcTo(cx, cy, cx + cw, cy, r);
+  g.closePath();
+  g.fillStyle = 'rgba(0,230,118,0.10)';
+  g.fill();
+  g.strokeStyle = 'rgba(0,230,118,0.45)';
+  g.lineWidth = 1.5;
+  g.stroke();
+  g.fillStyle = '#b9f5ce';
+  g.textBaseline = 'middle';
+  g.fillText(label, cx + padX, cy + chipH / 2 + 1);
+  g.textBaseline = 'alphabetic';
+  cx += cw + gapC;
+}
+
+/* ---- footer ---- */
+g.fillStyle = '#8fa39a';
+g.font = '400 24px "Segoe UI", Helvetica, Arial, sans-serif';
+g.fillText('No install · No account · Any browser, installs on Android', 80, 566);
+
+/* ---- save ---- */
+c.toBlob(async (blob) => {
+  try {
+    const res = await fetch('/save-og', { method: 'POST', body: blob });
+    const j = await res.json();
+    out.textContent = 'saved: ' + j.bytes + ' bytes';
+    window.__ogSaved = j;
+  } catch (e) {
+    out.textContent = 'SAVE FAILED: ' + e.message;
+    window.__ogSaved = { error: e.message };
+  }
+}, 'image/png');
+</script>
+</body>
+</html>

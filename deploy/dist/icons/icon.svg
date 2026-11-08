@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="RTA Daddy">
+  <rect width="512" height="512" rx="102" fill="#08080a"/>
+  <g fill="#12b312">
+    <rect x="3"    y="379" width="40" height="133"/>
+    <rect x="49"   y="287" width="40" height="225"/>
+    <rect x="96"   y="194" width="40" height="318"/>
+    <rect x="142"  y="92"  width="40" height="420"/>
+    <rect x="189"  y="41"  width="40" height="471"/>
+    <rect x="235"  y="133" width="40" height="379"/>
+    <rect x="282"  y="215" width="40" height="297"/>
+    <rect x="328"  y="297" width="40" height="215"/>
+    <rect x="375"  y="358" width="40" height="154"/>
+    <rect x="421"  y="404" width="40" height="108"/>
+    <rect x="468"  y="435" width="40" height="77"/>
+  </g>
+  <g fill="#5aeb5a">
+    <rect x="3"   y="376" width="40" height="4"/>
+    <rect x="49"  y="284" width="40" height="4"/>
+    <rect x="96"  y="191" width="40" height="4"/>
+    <rect x="142" y="89"  width="40" height="4"/>
+    <rect x="189" y="38"  width="40" height="4"/>
+    <rect x="235" y="130" width="40" height="4"/>
+    <rect x="282" y="212" width="40" height="4"/>
+    <rect x="328" y="294" width="40" height="4"/>
+    <rect x="375" y="355" width="40" height="4"/>
+    <rect x="421" y="401" width="40" height="4"/>
+    <rect x="468" y="432" width="40" height="4"/>
+  </g>
+</svg>

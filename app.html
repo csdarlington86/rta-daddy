@@ -1,0 +1,584 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#000000">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="RTA Daddy">
+<title>RTA Daddy — Real Time Analyzer</title>
+<meta name="description" content="Free two-input real-time analyzer in your browser: 1 to 1/48 octave RTA, spectrograph with rewind, 1+2 input overlay, target curves, draggable frequency markers and 31-band EQ export. Works on Android tablets, no account needed.">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+
+<div id="app">
+
+  <header id="topbar">
+    <div class="ctl">
+      <span class="ctlLabel">Banding:</span>
+      <select id="bandSel" class="sel" data-setting="banding" data-type="number">
+        <option value="1">1 Oct</option>
+        <option value="3">1/3 Oct</option>
+        <option value="6">1/6 Oct</option>
+        <option value="12">1/12 Oct</option>
+        <option value="24">1/24 Oct</option>
+        <option value="48">1/48 Oct</option>
+      </select>
+    </div>
+
+    <div class="readouts">
+      <div class="ro"><span class="roK">Peak</span><span class="roV" id="roPeak">—</span></div>
+      <div class="ro"><span class="roK">Level</span><span class="roV" id="roLevel">—</span></div>
+    </div>
+
+    <div class="meters" id="liveMeters" aria-label="Input level">
+      <span class="lmBars">
+        <span class="lmeter"><i id="lm1"></i><b class="lmPeak" id="lm1Peak" aria-hidden="true"></b></span>
+        <span class="lmeter" id="lm2Wrap"><i id="lm2"></i><b class="lmPeak" id="lm2Peak" aria-hidden="true"></b></span>
+      </span>
+      <span class="lmVal" id="lmVal" title="Peak input level in dBFS (loudest channel)">—</span>
+    </div>
+    <div class="chips">
+      <span class="chip demo hidden" id="chipDemo" title="Demo signal — no microphone in use">DEMO</span>
+      <span class="chip off hidden" id="chipOffline" title="No network — running from the saved copy">OFFLINE</span>
+    </div>
+
+    <div class="spacer"></div>
+
+    <button id="btnTraces" class="btn" title="Captured traces">Traces <span id="traceBadge" class="badge">0</span></button>
+    <button id="btnSettings" class="btn iconOnly" title="Settings" aria-label="Settings">
+      <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M19.14 12.94a7.6 7.6 0 0 0 .06-.94 7.6 7.6 0 0 0-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.62l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.3 7.3 0 0 0-1.62-.94l-.36-2.54A.5.5 0 0 0 13.9 2h-3.8a.5.5 0 0 0-.5.42l-.36 2.54c-.58.24-1.12.55-1.62.94l-2.39-.96a.5.5 0 0 0-.6.22L2.71 8.48a.5.5 0 0 0 .12.62l2.03 1.58c-.04.31-.06.62-.06.94s.02.63.06.94l-2.03 1.58a.5.5 0 0 0-.12.62l1.92 3.32c.13.23.4.32.6.22l2.39-.96c.5.39 1.04.7 1.62.94l.36 2.54c.04.24.25.42.5.42h3.8c.25 0 .46-.18.5-.42l.36-2.54c.58-.24 1.12-.55 1.62-.94l2.39.96c.2.1.47.01.6-.22l1.92-3.32a.5.5 0 0 0-.12-.62l-2.03-1.58ZM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2Z"/></svg>
+    </button>
+  </header>
+
+  <main id="plots">
+
+    <section id="specPanel" class="panel">
+      <canvas id="specCanvas"></canvas>
+      <div class="panelHead">
+        <span class="tag">Spectrograph</span>
+        <span class="tag right" id="specInfo"></span>
+      </div>
+      <div id="specCursor" class="cursor hidden"></div>
+      <div id="specCtrl" class="specCtrl">
+        <label class="specRange">
+          <span class="srK">Min</span>
+          <input type="range" min="-120" max="-30" step="1" data-setting="specMin" data-type="number" aria-label="Spectrograph minimum level">
+          <span class="rowVal srV" data-for="specMin"></span>
+        </label>
+        <label class="specRange">
+          <span class="srK">Max</span>
+          <input type="range" min="-60" max="0" step="1" data-setting="specMax" data-type="number" aria-label="Spectrograph maximum level">
+          <span class="rowVal srV" data-for="specMax"></span>
+        </label>
+      </div>
+      <div id="rewindWrap" class="rewind hidden">
+        <input id="rewind" type="range" min="0" max="0" value="0" step="1" aria-label="Rewind spectrograph history">
+        <span class="tag" id="rewindLabel">now</span>
+      </div>
+    </section>
+
+    <div id="splitter" role="separator" aria-orientation="horizontal" title="Drag to resize">
+      <span class="grip"></span>
+    </div>
+
+    <section id="rtaPanel" class="panel">
+      <canvas id="rtaCanvas"></canvas>
+      <div id="markBar" class="markBar">
+        <span class="markChip unset" id="markA">A —</span>
+        <span class="markChip unset" id="markB">B —</span>
+        <span class="markDelta" id="markDelta"></span>
+        <button class="markBtn" id="markZoom" title="Zoom the frequency axis to A–B" disabled>Zoom</button>
+        <button class="markBtn" id="markClear" title="Clear both markers" aria-label="Clear markers">✕</button>
+      </div>
+      <div class="panelHead">
+        <span class="tag">RTA</span>
+        <span class="tag right" id="rtaInfo"></span>
+      </div>
+      <div id="cursor" class="cursor hidden"></div>
+    </section>
+
+  </main>
+
+  <nav id="rail">
+    <button class="railBtn" id="railSpec" title="Spectrograph full screen">
+      <span class="ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="22" height="22"><g fill="currentColor"><rect x="3" y="4" width="18" height="3" rx="1"/><rect x="3" y="9.5" width="18" height="3" rx="1" opacity=".75"/><rect x="3" y="15" width="18" height="3" rx="1" opacity=".5"/><rect x="3" y="20" width="18" height="1.4" rx=".7" opacity=".35"/></g></svg>
+      </span>
+      <span class="lbl">Graph</span>
+    </button>
+    <button class="railBtn" id="railRta" title="RTA full screen">
+      <span class="ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M3 20h18v-1.4H3V20Zm0-5.2h3.2v3H3v-3Zm4.4-3.6h3.2v6.6H7.4v-6.6Zm4.4-4.6h3.2V17h-3.2V6.6Zm4.4-2.4H19V17h-3.2V4.2Z"/></svg>
+      </span>
+      <span class="lbl">RTA</span>
+    </button>
+    <button class="railBtn" id="railPause" title="Pause / resume">
+      <span class="ico" aria-hidden="true" id="pauseIcon">
+        <svg viewBox="0 0 24 24" width="22" height="22"><g fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></g></svg>
+      </span>
+      <span class="lbl">Pause</span>
+    </button>
+    <button class="railBtn" id="railFull" title="Full screen">
+      <span class="ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M4 9V4h5v2H6v3H4Zm11-5h5v5h-2V6h-3V4ZM4 15h2v3h3v2H4v-5Zm14 0h2v5h-5v-2h3v-3Z"/></svg>
+      </span>
+      <span class="lbl">Full</span>
+    </button>
+    <div class="railGap"></div>
+    <div class="railTrim">
+      <span class="lbl" id="railTrimLbl">Trim</span>
+      <button class="railTrimVal" id="railTrimVal" title="Input trim — tap to reset to 0 dB" aria-label="Input trim, tap to reset">0</button>
+      <button class="railBtn railStep" id="railTrimUp" title="Input trim up 1 dB" aria-label="Increase input trim">
+        <span class="ico big" aria-hidden="true">+</span>
+      </button>
+      <button class="railBtn railStep" id="railTrimDown" title="Input trim down 1 dB" aria-label="Decrease input trim">
+        <span class="ico big" aria-hidden="true">−</span>
+      </button>
+    </div>
+    <button class="railBtn" id="railZoomIn" title="Zoom in">
+      <span class="ico big" aria-hidden="true">+</span><span class="lbl">In</span>
+    </button>
+    <button class="railBtn" id="railZoomOut" title="Zoom out">
+      <span class="ico big" aria-hidden="true">−</span><span class="lbl">Out</span>
+    </button>
+    <button class="railBtn" id="railViewReset" title="Reset the RTA and spectrograph view">
+      <span class="ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M12 5V2L7.5 6 12 10V7a5 5 0 1 1-5 5H5a7 7 0 1 0 7-7Z"/></svg>
+      </span>
+      <span class="lbl">Reset</span>
+    </button>
+  </nav>
+
+</div>
+
+<!-- ============ settings sheet ============ -->
+<aside id="sheet" class="sheet" aria-hidden="true">
+  <div class="sheetHead">
+    <span class="sheetTitle">Settings</span>
+    <button class="btn iconOnly" id="sheetClose" aria-label="Close settings">✕</button>
+  </div>
+
+  <div class="sheetBody">
+    <div class="uiTip" id="uiTip" role="note">
+      <span class="uiTipText"><b>New here?</b> Start in Easy. Choose <b>Advanced</b> below when
+        you want FFT size, trims, target curves or EQ export.</span>
+      <button class="uiTipClose" id="uiTipClose" type="button" aria-label="Dismiss tip">Got it</button>
+    </div>
+    <div class="row uiModeRow">
+      <span class="rowLabel">Settings mode</span>
+      <div class="seg small" data-seg="uiMode">
+        <button class="segBtn" data-value="easy">Easy</button>
+        <button class="segBtn" data-value="advanced">Advanced</button>
+      </div>
+    </div>
+    <div class="seg" role="tablist" data-seg="tab">
+      <button class="segBtn active" data-tab="top" role="tab">Display</button>
+      <button class="segBtn" data-tab="spec" role="tab">Spectrograph</button>
+      <button class="segBtn" data-tab="rta" role="tab">RTA</button>
+      <button class="segBtn" data-tab="setups" role="tab">Setups</button>
+    </div>
+
+    <!-- ---------- TOP GRAPH ---------- -->
+    <div class="tab" data-tab="top">
+      <div class="row" data-advanced>
+        <span class="rowLabel">Frequency Scale</span>
+        <select class="sel" data-setting="scale">
+          <option value="third">1/3 Octave</option>
+          <option value="octave">Octave</option>
+          <option value="decade">Decade</option>
+          <option value="linear">Linear</option>
+        </select>
+      </div>
+      <div class="row">
+        <span class="rowLabel">Bars or lines</span>
+        <div class="seg small" data-seg="display">
+          <button class="segBtn" data-value="bars">Banded</button>
+          <button class="segBtn" data-value="lines">Lines</button>
+        </div>
+      </div>
+      <div class="row" data-advanced>
+        <span class="rowLabel">Y-Grid Interval</span>
+        <select class="sel" data-setting="gridDb" data-type="number">
+          <option value="3">3 dB</option>
+          <option value="6">6 dB</option>
+          <option value="12">12 dB</option>
+          <option value="24">24 dB</option>
+        </select>
+      </div>
+      <div class="row" data-advanced>
+        <span class="rowLabel">RTA line thickness</span>
+        <input type="range" class="rng" min="1" max="6" step="1" data-setting="lineThickness" data-type="number">
+        <span class="rowVal" data-for="lineThickness"></span>
+      </div>
+      <div class="row" data-advanced>
+        <span class="rowLabel">Trace line thickness</span>
+        <input type="range" class="rng" min="1" max="4" step="1" data-setting="traceThickness" data-type="number">
+        <span class="rowVal" data-for="traceThickness"></span>
+      </div>
+      <label class="row">
+        <span class="rowLabel">Peak frequency</span>
+        <span class="switch"><input type="checkbox" data-setting="trackPeak"><i></i></span>
+      </label>
+      <label class="row">
+        <span class="rowLabel">Peak hold trace</span>
+        <span class="switch"><input type="checkbox" data-setting="peakHold"><i></i></span>
+      </label>
+      <div class="row"><button class="btn wide" id="btnResetPeak">Reset peak hold</button></div>
+      <label class="row" data-advanced>
+        <span class="rowLabel">Enable Y Offset</span>
+        <span class="switch"><input type="checkbox" data-setting="yOffsetEnabled"><i></i></span>
+      </label>
+      <div class="row" data-advanced>
+        <span class="rowLabel">Y Offset (dB)</span>
+        <input type="range" class="rng" min="-30" max="30" step="1" data-setting="offset" data-type="number">
+        <span class="rowVal" data-for="offset"></span>
+      </div>
+      <div class="row">
+        <span class="rowLabel">Theme</span>
+        <div class="seg small" data-seg="theme">
+          <button class="segBtn" data-value="dark">Dark</button>
+          <button class="segBtn" data-value="light">Daylight</button>
+        </div>
+      </div>
+      <div class="row"><button class="btn wide hidden" id="btnInstall">Install app to home screen</button></div>
+    </div>
+
+    <!-- ---------- SPECTROGRAPH ---------- -->
+    <div class="tab hidden" data-tab="spec">
+      <div class="row">
+        <span class="rowLabel">Spectrograph source</span>
+        <select class="sel" data-setting="specSource">
+          <option value="a">Input 1</option>
+          <option value="b">Input 2 (1+2)</option>
+        </select>
+      </div>
+      <p class="fine">Set the level range with the Min and Max sliders on the plot itself.</p>
+      <div class="row">
+        <span class="rowLabel">History Slices</span>
+        <select class="sel" data-setting="specHistory" data-type="number">
+          <option value="250">250</option>
+          <option value="500">500</option>
+          <option value="1000">1000</option>
+        </select>
+      </div>
+      <div class="row">
+        <span class="rowLabel">Smoothing</span>
+        <div class="seg small" data-seg="specSmooth">
+          <button class="segBtn" data-value="0">Crisp</button>
+          <button class="segBtn" data-value="1">Smooth</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ---------- RTA ---------- -->
+    <div class="tab hidden" data-tab="rta">
+      <div class="row">
+        <span class="rowLabel">Averaging</span>
+        <select id="avgSel" class="sel" data-setting="averaging">
+          <option value="none">None</option>
+          <option value="fast">Fast</option>
+          <option value="slow">Slow</option>
+          <option value="infinite">Infinite</option>
+        </select>
+      </div>
+      <div class="row"><button class="btn wide" id="btnResetAvg">Reset averaging</button></div>
+      <div class="row" data-advanced>
+        <span class="rowLabel">Top Level</span>
+        <select class="sel" data-setting="dbTop" data-type="number">
+          <option value="6">+6 dBFS</option>
+          <option value="0">0 dBFS</option>
+          <option value="-6">-6 dBFS</option>
+          <option value="-12">-12 dBFS</option>
+          <option value="-24">-24 dBFS</option>
+        </select>
+      </div>
+      <div class="row" data-advanced>
+        <span class="rowLabel">Bottom Level</span>
+        <select class="sel" data-setting="dbBottom" data-type="number">
+          <option value="-48">-48 dBFS</option>
+          <option value="-60">-60 dBFS</option>
+          <option value="-72">-72 dBFS</option>
+          <option value="-84">-84 dBFS</option>
+          <option value="-96">-96 dBFS</option>
+          <option value="-120">-120 dBFS</option>
+        </select>
+      </div>
+      <div class="row" data-advanced>
+        <span class="rowLabel">FFT Size</span>
+        <select class="sel" data-setting="fft" data-type="number">
+          <option value="4096">4096</option>
+          <option value="8192">8192</option>
+          <option value="16384">16384</option>
+          <option value="32768">32768</option>
+        </select>
+      </div>
+      <div class="row" data-advanced>
+        <span class="rowLabel">RTA source</span>
+        <select class="sel" data-setting="rtaSource">
+          <option value="a">Input 1</option>
+          <option value="b">Input 2 (1+2)</option>
+        </select>
+      </div>
+      <label class="row" data-advanced>
+        <span class="rowLabel">Show Grid</span>
+        <span class="switch"><input type="checkbox" data-setting="showGrid"><i></i></span>
+      </label>
+    </div>
+
+    <!-- ---------- SETUPS ---------- -->
+    <div class="tab hidden" data-tab="setups">
+      <div class="row">
+        <input type="text" id="setupName" class="textInput" placeholder="Venue or room name" maxlength="28" aria-label="Setup name">
+      </div>
+      <div class="row"><button class="btn wide" id="btnSaveSetup">Save current setup</button></div>
+      <div id="setupList" class="setupList"></div>
+      <p class="fine">A setup stores banding, scales, display, the target curve, zoom, markers,
+        trims, channel mode and the EQ export options — everything about how you measure, not
+        the measurements themselves. Traces are saved separately.</p>
+    </div>
+
+    <!-- ---------- INPUT ---------- -->
+    <div class="groupTitle">Input</div>
+    <div class="row">
+      <span class="rowLabel">Input device</span>
+      <select class="sel" id="micSelect">
+        <option value="">Start a measurement first</option>
+      </select>
+    </div>
+    <div class="row" data-advanced>
+      <span class="rowLabel">Input channel</span>
+      <div class="seg small" data-seg="chan">
+        <button class="segBtn" data-value="mix">Mix</button>
+        <button class="segBtn" data-value="L">L</button>
+        <button class="segBtn" data-value="R">R</button>
+        <button class="segBtn" data-value="dual">1+2</button>
+      </div>
+    </div>
+    <div class="row" data-advanced>
+      <span class="rowLabel">Input 1 trim</span>
+      <input type="range" class="rng" min="-24" max="24" step="1" data-setting="trim" data-type="number">
+      <span class="rowVal" data-for="trim"></span>
+    </div>
+    <div class="row" data-advanced>
+      <span class="rowLabel">Input 2 trim</span>
+      <input type="range" class="rng" min="-24" max="24" step="1" data-setting="trimB" data-type="number">
+      <span class="rowVal" data-for="trimB"></span>
+    </div>
+    <div class="row"><button class="btn wide" id="btnAutoLevel2" title="Set the input trim so the live peak sits near the top of the plot">Auto Trim</button></div>
+    <div class="row"><button class="btn wide" id="btnRefreshInputs">Rescan inputs</button></div>
+    <div class="row" data-advanced><button class="btn wide" id="btnSelfTest2">Self-test — input &amp; analyzer accuracy</button></div>
+    <p class="fine" data-advanced>Mirrors whatever the OS exposes: built-in mic, headset, or a USB
+      audio interface. <b>1+2</b> measures both channels of a stereo interface at once —
+      a measurement mic on input 1 against a console feed on input 2 — and overlays them
+      on the RTA. Each plot can follow either input, and each input keeps its own trim.
+      A mono input shows the same signal on both.</p>
+
+    <div data-advanced>
+    <!-- ---------- TARGET CURVE ---------- -->
+    <div class="groupTitle">Target Curve</div>
+    <div class="row">
+      <span class="rowLabel">Curve</span>
+      <select class="sel" data-setting="targetPreset">
+        <option value="none">None</option>
+        <optgroup label="Live Sound — by genre">
+          <option value="flat">Reference · flat (0 dB)</option>
+          <option value="speech">Speech · corporate / theatre</option>
+          <option value="acoustic">Acoustic · jazz / folk / classical</option>
+          <option value="pop">Pop · top 40 / corporate party</option>
+          <option value="rock">Rock · club / live band</option>
+          <option value="edm">EDM · DJ / club</option>
+        </optgroup>
+        <optgroup label="Stage monitors">
+          <option value="wedge">Vocal wedge · HPF, presence lift</option>
+          <option value="drumfill">Drum fill · fuller low end</option>
+        </optgroup>
+        <optgroup label="Vehicle">
+          <option value="car">Car · daily / SQ (+9 dB bass)</option>
+          <option value="carSpl">Car · bass-heavy / SPL (+12 dB)</option>
+        </optgroup>
+        <optgroup label="Home theatre">
+          <option value="homeTheatre">Living room · +5 dB bass</option>
+          <option value="homeTheatreSmall">Small room · +3 dB, more HF roll</option>
+        </optgroup>
+        <optgroup label="Stereo listening">
+          <option value="stereo">Harman in-room · +6.5 dB bass</option>
+          <option value="stereoFlat">1 dB/oct tilt · B&amp;K-style</option>
+        </optgroup>
+        <optgroup label="Cinema">
+          <option value="cinema">X-curve · large room (−3 dB/oct)</option>
+          <option value="cinemaSmall">X-curve · small room (−1.5 dB/oct)</option>
+        </optgroup>
+        <option value="custom">Custom (imported)</option>
+      </select>
+    </div>
+    <p class="fine" id="curveNote"></p>
+    <div class="row">
+      <span class="rowLabel">Curve Offset (dB)</span>        <input type="range" class="rng" min="-60" max="20" step="1" data-setting="targetOffset" data-type="number">
+      <span class="rowVal" data-for="targetOffset"></span>
+    </div>
+    <div class="row">
+      <button class="btn wide" id="btnImportCurve">Import curve (CSV / JSON)</button>
+    </div>
+    </div>
+
+    <div data-advanced>
+    <!-- ---------- DATA ---------- -->
+    <div class="groupTitle">Data</div>
+    <div class="row btnRow">
+      <button class="btn" id="btnExportJson">Export traces (JSON)</button>
+      <button class="btn" id="btnExportCsv">Export CSV</button>
+      <button class="btn" id="btnImportTraces">Import</button>
+    </div>
+    <div class="row">
+      <span class="rowLabel">EQ reference</span>
+      <select class="sel" data-setting="eqRef">
+        <option value="auto">Auto (target, else mid)</option>
+        <option value="target">Target curve</option>
+        <option value="mid">500 Hz – 2 kHz average</option>
+        <option value="flat">0 dB (absolute)</option>
+      </select>
+    </div>
+    <div class="row">
+      <span class="rowLabel">EQ smoothing</span>
+      <div class="seg small" data-seg="eqSmooth">
+        <button class="segBtn" data-value="none">None</button>
+        <button class="segBtn" data-value="third">1/3 oct</button>
+        <button class="segBtn" data-value="sixth">1/6 oct</button>
+      </div>
+    </div>
+    <div class="row">
+      <span class="rowLabel">EQ file layout</span>
+      <div class="seg small" data-seg="eqFormat">
+        <button class="segBtn" data-value="fg">Freq,Gain</button>
+        <button class="segBtn" data-value="bfg">Band,Freq,Gain</button>
+      </div>
+    </div>
+    <div class="row btnRow">
+      <button class="btn wide" id="btnExportEq" title="31 ISO third-octave gains, ±12 dB, against the target or the mid-band average">Export 31-band EQ (CSV)</button>
+    </div>
+    <p class="fine">The 31-band file is one gain per ISO third-octave centre (20 Hz – 20 kHz),
+      clamped to ±12 dB and rounded to 0.5 dB — the range a graphic EQ can actually take.
+      With a target curve shown the gains correct towards it; without one they correct
+      towards the 500 Hz – 2 kHz average, so the house curve is left alone.</p>
+    </div>
+
+    <!-- ---------- ABOUT ---------- -->
+    <div class="groupTitle">About</div>
+    <p class="fine">
+      Two-input real-time analyzer: fractional-octave RTA, spectrograph with rewind,
+      1+2 input overlay, draggable A/B frequency markers with zoom to the selection,
+      captured traces with spatial averaging, and target curves for FOH, monitors, cars
+      and listening rooms.
+      Levels are relative full-scale (dBFS); this build has <strong>no SPL metering</strong>
+      and no calibrated absolute levels. Independent implementation — not affiliated with,
+      or endorsed by, Rational Acoustics. Overlaid inputs are two independent RTAs: there is
+      no transfer function, no impulse response and no .srf interchange.
+    </p>
+    <div class="row"><button class="btn wide" id="btnReset">Reset all settings</button></div>
+    <p class="fine" id="aboutBuild"></p>
+  </div>
+</aside>
+
+<!-- ============ traces drawer ============ -->
+<aside id="traces" class="sheet drawer" aria-hidden="true">
+  <div class="sheetHead">
+    <span class="sheetTitle">Traces</span>
+    <button class="btn" id="btnCapture2">Capture</button>
+    <button class="btn iconOnly" id="tracesClose" aria-label="Close traces">✕</button>
+  </div>
+  <div class="traceHead">
+    <span>Show</span><span>Name</span><span>Offset</span><span>Color</span><span></span>
+  </div>
+  <div id="traceList" class="traceList">
+    <p class="empty" id="traceEmpty">No captured traces yet. Hit Capture to store the current response.</p>
+  </div>
+  <div class="traceFoot">
+    <label class="avgPick">Average
+      <select id="avgSecs" class="sel" aria-label="Average capture length">
+        <option value="3">3 s</option>
+        <option value="10" selected>10 s</option>
+        <option value="30">30 s</option>
+        <option value="60">60 s</option>
+      </select>
+    </label>
+    <button class="btn" id="btnCaptureAvg">Record</button>
+    <button class="btn" id="btnAverage">Avg sel.</button>
+    <button class="btn" id="btnDelete">Delete</button>
+    <button class="btn" id="btnUndo" disabled>Undo</button>
+    <button class="btn" id="btnClearAll">Clear</button>
+  </div>
+</aside>
+
+<div id="scrim" class="scrim hidden"></div>
+
+<!-- ============ mic gate ============ -->
+<div id="gate" class="gate">
+  <div class="gateCard">
+    <img class="gateMark" src="icons/icon.svg" alt="RTA Daddy logo" width="68" height="68">
+    <div class="gateLogo">RTA<span>DADDY</span></div>
+    <p class="gateFree">100% Free RTA and Spectrograph</p>
+    <p class="gateSub">Two-input real-time analyzer</p>
+    <div id="gateMsg" class="gateMsg"></div>
+    <button id="btnStart" class="btn primary wide">Start measurement</button>
+    <button id="btnDemo" class="btn wide">Demo signal (no microphone)</button>
+    <button id="btnSelfTest" class="btn wide">Test input (channels &amp; meters)</button>
+    <p class="fine">
+      Microphone input requires a secure context: HTTPS, or localhost.
+      On Android, install this page to the home screen for a full-screen app.
+    </p>
+  </div>
+</div>
+
+<!-- ============ input self-test ============ -->
+<div id="selftest" class="gate selftest hidden" role="dialog" aria-modal="true" aria-labelledby="stTitle">
+  <div class="gateCard stCard">
+    <div class="stHead">
+      <span class="stTitle" id="stTitle">Input self-test</span>
+      <button class="btn iconOnly" id="stClose" aria-label="Close self-test">✕</button>
+    </div>
+    <p class="stLede">What the browser actually handed over: channel count, sample rate and a
+      live meter for each channel. Nothing is recorded or uploaded.</p>
+    <div id="stMsg" class="gateMsg"></div>
+    <div class="stMeters">
+      <div class="stMeterRow">
+        <span class="stName"><i class="stDot in1"></i>IN 1</span>
+        <span class="stBar"><i id="stBar1"></i></span>
+        <span class="stVal" id="stVal1">—</span>
+      </div>
+      <div class="stMeterRow">
+        <span class="stName"><i class="stDot in2"></i>IN 2</span>
+        <span class="stBar"><i id="stBar2"></i></span>
+        <span class="stVal" id="stVal2">—</span>
+      </div>
+    </div>
+    <p class="stVerdict" id="stVerdict" role="status" aria-live="polite">Opening the input…</p>
+    <div class="stRows" id="stRows"></div>
+    <button class="btn wide" id="stRun">Re-check input</button>
+    <div class="stSplit">
+      <div class="stSub">Analyzer accuracy</div>
+      <p class="stLede">Three inaudible reference tones check the band levels and the peak
+        frequency on the current scale. This tests the analyzer math, not the microphone.</p>
+      <div class="stRows" id="stAnRows"></div>
+      <p class="stVerdict" id="stAnVerdict" role="status" aria-live="polite">Not run yet.</p>
+      <button class="btn wide" id="stRunAnalyzer">Run analyzer test</button>
+    </div>
+    <p class="fine">Talk or clap: both meters should move independently. If IN 2 stays at — while
+      IN 1 moves, input 2 has no signal. A mono microphone reports one channel, and 1+2 then shows
+      the same signal on both.</p>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+<input type="file" id="fileInput" accept=".json,.csv,.txt" hidden>
+
+<script src="js/app.js"></script>
+</body>
+</html>

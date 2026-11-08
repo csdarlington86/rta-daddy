@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Social card generator</title></head>
+<body style="margin:0;background:#111;color:#ddd;font:13px ui-monospace,monospace">
+<canvas id="c" style="display:block;max-width:100%"></canvas>
+<pre id="out" style="padding:8px">drawing…</pre>
+<script>
+/* Generates the share/social artwork from one drawing routine.
+   ?size=og | square | story   then it POSTs the PNG to /save?name=<file>. */
+
+const GREEN = '#12b312', BRIGHT = '#00e676', LIGHT = '#5aeb5a';
+const SIZES = {
+  og:     { w: 1200, h: 630,  file: 'og-image',     layout: 'wide'  },
+  square: { w: 1080, h: 1080, file: 'social-square',layout: 'stack' },
+  story:  { w: 1080, h: 1920, file: 'social-story', layout: 'tall'  }
+};
+const key = (new URLSearchParams(location.search).get('size') || 'og');
+const S = SIZES[key] || SIZES.og;
+
+const c = document.getElementById('c');
+c.width = S.w; c.height = S.h;
+const W = S.w, H = S.h;
+const g = c.getContext('2d');
+const out = document.getElementById('out');
+
+const FONT = '"Segoe UI", Helvetica, Arial, sans-serif';
+
+function background() {
+  const bg = g.createLinearGradient(0, 0, W, H);
+  bg.addColorStop(0, '#0b1210');
+  bg.addColorStop(1, '#05070a');
+  g.fillStyle = bg;
+  g.fillRect(0, 0, W, H);
+
+  const gx = S.layout === 'wide' ? W * 0.82 : W * 0.5;
+  const gy = S.layout === 'tall' ? H * 0.3 : H * 0.42;
+  const glow = g.createRadialGradient(gx, gy, 20, gx, gy, Math.max(W, H) * 0.62);
+  glow.addColorStop(0, 'rgba(0,230,118,0.16)');
+  glow.addColorStop(1, 'rgba(0,230,118,0)');
+  g.fillStyle = glow;
+  g.fillRect(0, 0, W, H);
+
+  g.strokeStyle = 'rgba(255,255,255,0.045)';
+  g.lineWidth = 1;
+  const step = S.layout === 'tall' ? 72 : 60;
+  for (let x = 0; x <= W; x += step) { g.beginPath(); g.moveTo(x + 0.5, 0); g.lineTo(x + 0.5, H); g.stroke(); }
+  for (let y = 0; y <= H; y += step) { g.beginPath(); g.moveTo(0, y + 0.5); g.lineTo(W, y + 0.5); g.stroke(); }
+}
+
+function drawIcon(x, y, size) {
+  const r = size * 0.2;
+  g.save();
+  g.beginPath();
+  g.moveTo(x + r, y);
+  g.arcTo(x + size, y, x + size, y + size, r);
+  g.arcTo(x + size, y + size, x, y + size, r);
+  g.arcTo(x, y + size, x, y, r);
+  g.arcTo(x, y, x + size, y, r);
+  g.closePath();
+  g.fillStyle = '#0c110e';
+  g.fill();
+  g.strokeStyle = 'rgba(0,230,118,0.35)';
+  g.lineWidth = Math.max(2, size * 0.012);
+  g.stroke();
+
+  const n = 11, pad = size * 0.13, gap = size * 0.022;
+  const bw = (size - pad * 2 - gap * (n - 1)) / n;
+  const base = y + size - pad, peak = size - pad * 2;
+  const frac = [0.26, 0.44, 0.63, 0.83, 0.93, 0.75, 0.59, 0.43, 0.31, 0.22, 0.16];
+  for (let i = 0; i < n; i++) {
+    const h = peak * frac[i];
+    const bx = x + pad + i * (bw + gap);
+    g.fillStyle = GREEN;
+    g.fillRect(bx, base - h, bw, h);
+    g.fillStyle = LIGHT;
+    g.fillRect(bx, base - h, bw, Math.max(2, size * 0.012));
+  }
+  g.restore();
+}
+
+function wordmark(x, baseline, rtaPx, daddyPx) {
+  g.textBaseline = 'alphabetic';
+  g.fillStyle = '#ffffff';
+  g.font = '300 ' + rtaPx + 'px ' + FONT;
+  g.fillText('RTA', x, baseline);
+  const w = g.measureText('RTA').width;
+  g.fillStyle = BRIGHT;
+  g.font = '600 ' + daddyPx + 'px ' + FONT;
+  g.fillText('DADDY', x + w + rtaPx * 0.16, baseline - rtaPx * 0.04);
+  return w + rtaPx * 0.16 + g.measureText('DADDY').width;
+}
+
+function chips(labels, x, y, maxX, size, h, gapC) {
+  g.font = '600 ' + size + 'px ' + FONT;
+  let cx = x, cy = y;
+  const padX = size * 0.92, r = h / 2;
+  for (const label of labels) {
+    const tw = g.measureText(label).width;
+    const cw = tw + padX * 2;
+    if (cx + cw > maxX && cx > x) { cx = x; cy += h + gapC; }
+    g.beginPath();
+    g.moveTo(cx + r, cy);
+    g.arcTo(cx + cw, cy, cx + cw, cy + h, r);
+    g.arcTo(cx + cw, cy + h, cx, cy + h, r);
+    g.arcTo(cx, cy + h, cx, cy, r);
+    g.arcTo(cx, cy, cx + cw, cy, r);
+    g.closePath();
+    g.fillStyle = 'rgba(0,230,118,0.10)';
+    g.fill();
+    g.strokeStyle = 'rgba(0,230,118,0.45)';
+    g.lineWidth = Math.max(1.5, size * 0.06);
+    g.stroke();
+    g.fillStyle = '#b9f5ce';
+    g.textBaseline = 'middle';
+    g.fillText(label, cx + padX, cy + h / 2 + 1);
+    g.textBaseline = 'alphabetic';
+    cx += cw + gapC;
+  }
+}
+
+function draw() {
+  background();
+  const CHIPS = ['1/48 oct RTA', 'Spectrograph', 'Target curves', 'Captured traces'];
+
+  if (S.layout === 'wide') {
+    drawIcon(W - 328, 168, 268);
+    wordmark(80, 246, 100, 54);
+    g.fillStyle = '#eafff2';
+    g.font = '700 42px ' + FONT;
+    g.fillText('100% Free RTA and Spectrograph', 80, 318);
+    chips(CHIPS, 80, 366, 800, 24, 50, 12);
+    g.fillStyle = '#8fa39a';
+    g.font = '400 24px ' + FONT;
+    g.fillText('No install · No account · Any browser, installs on Android', 80, 566);
+
+  } else if (S.layout === 'stack') {
+    /* 1080 x 1080 feed post */
+    drawIcon((W - 300) / 2, 150, 300);
+    const wm = wordmark((W - 470) / 2, 570, 116, 62);
+    g.fillStyle = '#eafff2';
+    g.font = '700 50px ' + FONT;
+    const t = '100% Free RTA and Spectrograph';
+    g.fillText(t, (W - g.measureText(t).width) / 2, 664);
+    g.font = '600 24px ' + FONT;
+    const cw = CHIPS.reduce((n, l) => n + g.measureText(l).width + 44 + 12, 0) - 12;
+    if (cw <= W - 160) chips(CHIPS, (W - cw) / 2, 726, W - 80, 24, 50, 12);
+    else chips(CHIPS.slice(0, 2), 80, 726, W - 80, 26, 54, 14);
+    if (cw > W - 160) chips(CHIPS.slice(2), 80, 796, W - 80, 26, 54, 14);
+    g.fillStyle = '#8fa39a';
+    g.font = '400 26px ' + FONT;
+    const f = 'No install · No account · Any browser';
+    g.fillText(f, (W - g.measureText(f).width) / 2, 962);
+
+  } else {
+    /* 1080 x 1920 story */
+    wordmark((W - 470) / 2, 420, 112, 60);
+    g.fillStyle = '#eafff2';
+    g.font = '700 54px ' + FONT;
+    const t1 = '100% Free RTA';
+    g.fillText(t1, (W - g.measureText(t1).width) / 2, 512);
+    const t2 = 'and Spectrograph';
+    g.fillText(t2, (W - g.measureText(t2).width) / 2, 578);
+
+    drawIcon((W - 420) / 2, 690, 420);
+
+    chips(CHIPS.slice(0, 2), 120, 1230, W - 120, 27, 58, 14);
+    chips(CHIPS.slice(2), 120, 1308, W - 120, 27, 58, 14);
+
+    g.fillStyle = '#8fa39a';
+    g.font = '400 30px ' + FONT;
+    const f1 = 'No install · No account';
+    g.fillText(f1, (W - g.measureText(f1).width) / 2, 1560);
+    g.fillStyle = BRIGHT;
+    g.font = '600 34px ' + FONT;
+    const f2 = 'Open in any browser';
+    g.fillText(f2, (W - g.measureText(f2).width) / 2, 1622);
+  }
+}
+
+draw();
+out.textContent = key + ' → ' + W + 'x' + H;
+
+c.toBlob(async (blob) => {
+  try {
+    const res = await fetch('/save?name=' + S.file, { method: 'POST', body: blob });
+    const j = await res.json();
+    out.textContent += '\nsaved ' + S.file + '.png (' + j.bytes + ' bytes)';
+    window.__cardSaved = Object.assign({ size: key, w: W, h: H }, j);
+  } catch (e) {
+    out.textContent += '\nSAVE FAILED: ' + e.message;
+    window.__cardSaved = { error: e.message };
+  }
+}, 'image/png');
+</script>
+</body>
+</html>

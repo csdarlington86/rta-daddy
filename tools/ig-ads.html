@@ -1,0 +1,549 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Instagram ad generator — RTA Daddy</title>
+<style>
+  body{margin:0;background:#0a0a0b;color:#cfd6d2;font:12px/1.5 ui-monospace,Menlo,Consolas,monospace}
+  canvas{display:block;width:480px;max-width:100%;height:auto;background:#000}
+  pre{padding:10px 12px;white-space:pre-wrap;margin:0}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<pre id="out">starting…</pre>
+<script>
+/* Draws the Instagram kit and POSTs each PNG to /save?name=<file>.
+   Feed: 1080x1080 · Stories: 1080x1920 (key content kept inside y=250..1560). */
+
+const FONT = '"Segoe UI", Helvetica, Arial, sans-serif';
+const MONO = 'ui-monospace, "SF Mono", Menlo, Consolas, monospace';
+const GREEN = '#12b312', BRIGHT = '#00e676', LIGHT = '#5aeb5a';
+const INK = '#eafff2', MUTED = '#8fa39a', FAINT = '#6f8a7c';
+
+const c = document.getElementById('c');
+const out = document.getElementById('out');
+let g, W, H;
+
+/* ---------- primitives ---------- */
+function rr(x, y, w, h, r) {
+  g.beginPath();
+  g.moveTo(x + r, y);
+  g.arcTo(x + w, y, x + w, y + h, r);
+  g.arcTo(x + w, y + h, x, y + h, r);
+  g.arcTo(x, y + h, x, y, r);
+  g.arcTo(x, y, x + w, y, r);
+  g.closePath();
+}
+
+function bg(glowY) {
+  const lin = g.createLinearGradient(0, 0, W, H);
+  lin.addColorStop(0, '#0b1210');
+  lin.addColorStop(1, '#05070a');
+  g.fillStyle = lin;
+  g.fillRect(0, 0, W, H);
+
+  const gy = glowY == null ? H * 0.34 : glowY;
+  const glow = g.createRadialGradient(W / 2, gy, 30, W / 2, gy, Math.max(W, H) * 0.72);
+  glow.addColorStop(0, 'rgba(0,230,118,0.17)');
+  glow.addColorStop(1, 'rgba(0,230,118,0)');
+  g.fillStyle = glow;
+  g.fillRect(0, 0, W, H);
+
+  g.strokeStyle = 'rgba(255,255,255,0.042)';
+  g.lineWidth = 1;
+  const step = W > 1100 ? 90 : 60;
+  for (let x = 0; x <= W; x += step) { g.beginPath(); g.moveTo(x + 0.5, 0); g.lineTo(x + 0.5, H); g.stroke(); }
+  for (let y = 0; y <= H; y += step) { g.beginPath(); g.moveTo(0, y + 0.5); g.lineTo(W, y + 0.5); g.stroke(); }
+}
+
+function icon(x, y, size) {
+  const r = size * 0.2;
+  g.save();
+  rr(x, y, size, size, r);
+  g.fillStyle = '#08080a';
+  g.fill();
+  g.strokeStyle = 'rgba(0,230,118,0.38)';
+  g.lineWidth = Math.max(2, size * 0.011);
+  g.stroke();
+
+  const n = 11, pad = size * 0.14, gap = size * 0.021;
+  const bw = (size - pad * 2 - gap * (n - 1)) / n;
+  const base = y + size - pad, peak = size - pad * 2;
+  const frac = [0.26, 0.44, 0.63, 0.83, 0.93, 0.75, 0.59, 0.43, 0.31, 0.22, 0.16];
+  for (let i = 0; i < n; i++) {
+    const h = peak * frac[i];
+    const bx = x + pad + i * (bw + gap);
+    g.fillStyle = GREEN;
+    g.fillRect(bx, base - h, bw, h);
+    g.fillStyle = LIGHT;
+    g.fillRect(bx, base - h, bw, Math.max(2, size * 0.012));
+  }
+  g.restore();
+}
+
+function wordmark(x, baseline, rtaPx, daddyPx) {
+  g.textBaseline = 'alphabetic';
+  g.fillStyle = '#ffffff';
+  g.font = '300 ' + rtaPx + 'px ' + FONT;
+  g.fillText('RTA', x, baseline);
+  const w = g.measureText('RTA').width;
+  g.fillStyle = BRIGHT;
+  g.font = '600 ' + daddyPx + 'px ' + FONT;
+  g.fillText('DADDY', x + w + rtaPx * 0.15, baseline - rtaPx * 0.035);
+  return w + rtaPx * 0.15 + g.measureText('DADDY').width;
+}
+
+function wordmarkWidth(rtaPx, daddyPx) {
+  g.font = '300 ' + rtaPx + 'px ' + FONT;
+  const a = g.measureText('RTA').width;
+  g.font = '600 ' + daddyPx + 'px ' + FONT;
+  return a + rtaPx * 0.15 + g.measureText('DADDY').width;
+}
+
+function pill(label, x, y, size, h, opts) {
+  const o = opts || {};
+  g.font = (o.weight || 600) + ' ' + size + 'px ' + (o.mono ? MONO : FONT);
+  const padX = size * 0.95;
+  const w = g.measureText(label).width + padX * 2;
+  rr(x, y, w, h, h / 2);
+  g.fillStyle = o.solid ? 'rgba(0,230,118,0.16)' : 'rgba(0,230,118,0.09)';
+  g.fill();
+  g.strokeStyle = o.strong ? 'rgba(0,230,118,0.72)' : 'rgba(0,230,118,0.42)';
+  g.lineWidth = Math.max(1.6, size * 0.055);
+  g.stroke();
+  g.fillStyle = o.color || '#b9f5ce';
+  g.textBaseline = 'middle';
+  g.fillText(label, x + padX, y + h / 2 + 1);
+  g.textBaseline = 'alphabetic';
+  return w;
+}
+
+function centerPills(labels, y, size, h, gapC, opts) {
+  const widths = labels.map((l) => {
+    g.font = '600 ' + size + 'px ' + FONT;
+    return g.measureText(l).width + size * 0.95 * 2;
+  });
+  let total = widths.reduce((a, b) => a + b, 0) + gapC * (labels.length - 1);
+  let x = (W - total) / 2;
+  labels.forEach((l, i) => { pill(l, x, y, size, h, opts); x += widths[i] + gapC; });
+  return total;
+}
+
+function center(text, y, font, color) {
+  g.font = font;
+  g.fillStyle = color;
+  g.textAlign = 'center';
+  g.fillText(text, W / 2, y);
+  g.textAlign = 'left';
+}
+
+/* ---------- a spectrogram panel ---------- */
+function heat(v) {
+  const stops = [[0.05, [7, 14, 10]], [0.3, [18, 150, 30]], [0.62, [90, 235, 90]], [0.86, [200, 255, 214]], [1, [240, 255, 246]]];
+  for (let i = 1; i < stops.length; i++) {
+    if (v <= stops[i][0]) {
+      const a = stops[i - 1], b = stops[i];
+      const t = (v - a[0]) / (b[0] - a[0]);
+      return 'rgb(' + a[1].map((n, k) => Math.round(n + (b[1][k] - n) * t)).join(',') + ')';
+    }
+  }
+  return 'rgb(240,255,246)';
+}
+
+function specValue(fx, ty) {
+  let v = 0.08 + 0.05 * Math.sin(fx * 9 + ty * 4);
+  v += 0.58 * Math.exp(-Math.pow((fx - 0.42 + 0.05 * Math.sin(ty * 3)) / 0.14, 2)) * (0.6 + 0.4 * Math.sin(ty * 5));
+  v += 0.36 * Math.exp(-Math.pow((fx - 0.68 - 0.04 * Math.sin(ty * 2.2)) / 0.085, 2)) * (0.5 + 0.5 * Math.cos(ty * 4.5));
+  v += 0.2 * Math.exp(-Math.pow((fx - 0.2) / 0.19, 2)) * (0.4 + 0.6 * Math.sin(ty * 7));
+  v += 0.55 * Math.pow(Math.max(0, Math.sin(ty * 11)), 6) * Math.exp(-Math.pow((fx - 0.55) / 0.3, 2));
+  return Math.min(1, Math.max(0, v));
+}
+
+function waterfall(x, y, w, h) {
+  const cell = Math.max(3, Math.round(w / 190));
+  for (let py = 0; py < h; py += cell) {
+    for (let px = 0; px < w; px += cell) {
+      /* quantise time into slices so the plot reads as a waterfall rather than
+         one soft blur */
+      const t = 1 - py / h;
+      const sl = Math.round(t * 120) / 120;
+      const v = specValue(px / w, t * 0.55 + sl * 0.45);
+      g.fillStyle = heat(v);
+      g.fillRect(x + px, y + py, cell, cell);
+    }
+  }
+  /* frame + frequency ticks */
+  g.strokeStyle = 'rgba(255,255,255,0.16)';
+  g.lineWidth = 2;
+  g.strokeRect(x + 1, y + 1, w - 2, h - 2);
+  const ticks = [[0.05, '50'], [0.2, '200'], [0.4, '1k'], [0.62, '4k'], [0.82, '10k']];
+  g.font = '600 ' + Math.round(h * 0.032) + 'px ' + MONO;
+  g.fillStyle = 'rgba(230,255,240,0.72)';
+  g.textBaseline = 'top';
+  for (const [fx, label] of ticks) {
+    const tx = x + fx * w;
+    g.strokeStyle = 'rgba(255,255,255,0.22)';
+    g.lineWidth = 1;
+    g.beginPath(); g.moveTo(tx, y); g.lineTo(tx, y + h); g.stroke();
+    g.fillText(label, tx + 4, y + h + 6);
+  }
+  g.textBaseline = 'alphabetic';
+}
+
+function sliders(x, y, w, minV, maxV, size) {
+  const knob = size * 0.58;
+  const trackH = Math.max(4, size * 0.14);
+  const trackX = x + size * 0.5;
+  const trackW = w - size;
+  const cy = y + knob;
+  rr(trackX, cy - trackH / 2, trackW, trackH, trackH / 2);
+  g.fillStyle = 'rgba(255,255,255,0.2)';
+  g.fill();
+
+  const baseY = cy + knob + size * 1.15;
+  g.font = '600 ' + Math.round(size * 0.86) + 'px ' + MONO;
+  /* end labels, then the value under each knob so nothing overlaps */
+  g.fillStyle = FAINT;
+  g.textBaseline = 'alphabetic';
+  g.fillText('MIN', x, baseY);
+  g.textAlign = 'right';
+  g.fillText('MAX', x + w, baseY);
+  g.textAlign = 'left';
+
+  [[0.22, minV], [0.76, maxV]].forEach(([p, val]) => {
+    const cx = trackX + trackW * p;
+    g.beginPath();
+    g.arc(cx, cy, knob, 0, Math.PI * 2);
+    g.fillStyle = BRIGHT;
+    g.fill();
+    g.fillStyle = INK;
+    g.textAlign = 'center';
+    g.fillText(val, cx, baseY);
+    g.textAlign = 'left';
+  });
+  return baseY - y;
+}
+
+/* Wi-Fi arcs inside a ring with a slash through it — the classic no-signal badge.
+   d is the badge diameter: everything scales off it. */
+function wifiOff(cx, cy, d) {
+  const R = d / 2;
+  g.save();
+  g.lineCap = 'round';
+
+  g.strokeStyle = 'rgba(170,190,180,0.40)';
+  g.lineWidth = d * 0.050;
+  g.beginPath();
+  g.arc(cx, cy, R * 0.93, 0, Math.PI * 2);
+  g.stroke();
+
+  /* arcs and dot sit low, so the dot clears the bottom of the ring */
+  const cyA = cy + R * 0.34;
+  for (let i = 0; i < 3; i++) {
+    const r = R * (0.34 + i * 0.23);
+    g.beginPath();
+    g.arc(cx, cyA, r, Math.PI * 1.21, Math.PI * 1.79);
+    g.stroke();
+  }
+  g.fillStyle = 'rgba(170,190,180,0.48)';
+  g.beginPath();
+  g.arc(cx, cyA, d * 0.042, 0, Math.PI * 2);
+  g.fill();
+
+  /* diagonal slash: dark halo so it reads over the arcs, then the green bar */
+  const k = R * 0.72;
+  g.strokeStyle = '#05070a';
+  g.lineWidth = d * 0.118;
+  g.beginPath(); g.moveTo(cx - k, cy - k); g.lineTo(cx + k, cy + k); g.stroke();
+  g.strokeStyle = BRIGHT;
+  g.lineWidth = d * 0.054;
+  g.beginPath(); g.moveTo(cx - k, cy - k); g.lineTo(cx + k, cy + k); g.stroke();
+
+  g.restore();
+}
+
+/* A numbered step plate: badge, title, one-line detail. */
+function stepRow(x, y, w, num, title, sub, accent) {
+  const h = 132;
+  rr(x, y, w, h, 22);
+  g.fillStyle = accent ? 'rgba(0,230,118,0.13)' : 'rgba(255,255,255,0.045)';
+  g.fill();
+  g.strokeStyle = accent ? 'rgba(0,230,118,0.55)' : 'rgba(255,255,255,0.18)';
+  g.lineWidth = 2;
+  g.stroke();
+
+  const d = 62, bx = x + 28, by = y + (h - d) / 2;
+  g.beginPath();
+  g.arc(bx + d / 2, by + d / 2, d / 2, 0, Math.PI * 2);
+  g.fillStyle = accent ? BRIGHT : 'rgba(255,255,255,0.13)';
+  g.fill();
+  g.fillStyle = accent ? '#04140b' : INK;
+  g.font = '700 34px ' + FONT;
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.fillText(String(num), bx + d / 2, by + d / 2 + 1);
+  g.textAlign = 'left';
+  g.textBaseline = 'alphabetic';
+
+  g.fillStyle = INK;
+  g.font = '600 33px ' + FONT;
+  g.fillText(title, bx + d + 26, y + 58);
+  g.fillStyle = MUTED;
+  g.font = '400 26px ' + FONT;
+  g.fillText(sub, bx + d + 26, y + 94);
+  return h;
+}
+
+/* ---------- variants ---------- */
+let QR = null;
+
+const FEED_CHIPS = ['1/48 oct RTA', 'Spectrograph', 'Target curves', 'Traces'];
+
+const variants = [
+  {
+    file: 'ig-feed-hero', w: 1080, h: 1080, draw() {
+      bg(300);
+      icon((W - 210) / 2, 132, 210);
+      const ww = wordmarkWidth(120, 64);
+      wordmark((W - ww) / 2, 470, 120, 64);
+      center('100% Free RTA', 556, '700 62px ' + FONT, INK);
+      center('and Spectrograph', 626, '700 62px ' + FONT, INK);
+      centerPills(['No account', 'No subscription', 'No SPL meter'], 700, 26, 58, 14);
+      center('1 octave to 1/48, time scrolling up, target curves and', 856, '400 30px ' + FONT, MUTED);
+      center('captured traces — free, in any browser', 900, '400 30px ' + FONT, MUTED);
+      center('OPENS ON ANDROID TABLETS · NOTHING TO INSTALL', 988, '600 22px ' + MONO, FAINT);
+    }
+  },
+  {
+    file: 'ig-feed-features', w: 1080, h: 1080, draw() {
+      bg(200);
+      wordmark(84, 140, 46, 25);
+      center('Everything a small room needs', 236, '700 58px ' + FONT, INK);
+      const rows = [
+        ['1/48 octave RTA', '1 oct to 1/48, bars or line, peak hold, averaging'],
+        ['Spectrograph', 'time scrolling up — drag it back to see what happened'],
+        ['Target curves', 'live sound and cinema, or import your own'],
+        ['Traces and export', 'capture, compare, then CSV or JSON']
+      ];
+      rows.forEach(([title, sub], i) => {
+        const y = 336 + i * 148;
+        rr(84, y + 10, 16, 16, 5);
+        g.fillStyle = BRIGHT; g.fill();
+        g.fillStyle = INK;
+        g.font = '600 40px ' + FONT;
+        g.fillText(title, 124, y + 28);
+        g.fillStyle = MUTED;
+        g.font = '400 28px ' + FONT;
+        g.fillText(sub, 124, y + 74);
+        g.strokeStyle = 'rgba(255,255,255,0.07)';
+        g.lineWidth = 1;
+        g.beginPath(); g.moveTo(84, y + 108); g.lineTo(W - 84, y + 108); g.stroke();
+      });
+      centerPills(['100% free', 'Runs offline', 'Android + desktop'], 936, 24, 54, 14);
+      center('NO SPL METERING — DELIBERATELY', 1040, '600 20px ' + MONO, FAINT);
+    }
+  },
+  {
+    file: 'ig-feed-spectro', w: 1080, h: 1080, draw() {
+      bg(340);
+      center('See what the room is doing', 150, '700 52px ' + FONT, INK);
+      center('while it is happening', 210, '700 52px ' + FONT, INK);
+      waterfall(90, 268, 900, 440);
+      sliders(96, 748, 888, '-60', '-10', 26);
+      g.fillStyle = INK;
+      g.font = '600 36px ' + FONT;
+      g.fillText('Drag the graph up or down to rewind', 96, 902);
+      g.fillStyle = MUTED;
+      g.font = '400 28px ' + FONT;
+      g.fillText('Min and max level live on the graph — no menus mid-show.', 96, 946);
+      const ww = wordmarkWidth(44, 24);
+      wordmark(W - 90 - ww, 1030, 44, 24);
+    }
+  },
+  {
+    file: 'ig-feed-honest', w: 1080, h: 1080, draw() {
+      bg(260);
+      center('No account.', 330, '700 86px ' + FONT, INK);
+      center('No subscription.', 446, '700 86px ' + FONT, INK);
+      center('No SPL meter.', 562, '700 86px ' + FONT, BRIGHT);
+      g.fillStyle = MUTED;
+      g.font = '400 32px ' + FONT;
+      g.textAlign = 'center';
+      wrapText('A trustworthy SPL number needs a calibrated mic, so this one does not pretend. Everything else is here: RTA, spectrograph, targets, traces.', W / 2, 660, W - 220, 46);
+      g.textAlign = 'left';
+      centerPills(['100% free', 'No sign-up', 'Works offline'], 838, 26, 58, 14);
+      const ww = wordmarkWidth(56, 30);
+      wordmark((W - ww) / 2, 998, 56, 30);
+    }
+  },
+  {
+    file: 'ig-feed-card', w: 1080, h: 1080, draw() {
+      bg(320);
+      const ww = wordmarkWidth(70, 38);
+      wordmark((W - ww) / 2, 132, 70, 38);
+      /* QR plate */
+      const plate = 470, px = (W - plate) / 2, py = 210;
+      rr(px - 26, py - 26, plate + 52, plate + 52, 34);
+      g.fillStyle = '#ffffff';
+      g.fill();
+      if (QR) g.drawImage(QR, px, py, plate, plate);
+      center('Scan to open', 812, '700 54px ' + FONT, INK);
+      center('Point any phone or tablet camera at the code', 866, '400 30px ' + FONT, MUTED);
+      centerPills(['Free', 'No install', 'No account'], 924, 24, 54, 14);
+      center('RTA DADDY · FREE RTA + SPECTROGRAPH', 1036, '600 20px ' + MONO, FAINT);
+    }
+  },
+  {
+    file: 'ig-feed-offline', w: 1080, h: 1080, draw() {
+      bg(300);
+      const ww = wordmarkWidth(48, 26);
+      wordmark((W - ww) / 2, 150, 48, 26);
+      wifiOff(W / 2, 250, 190);
+      center('Online once.', 470, '700 84px ' + FONT, INK);
+      center('Offline after.', 566, '700 84px ' + FONT, BRIGHT);
+      stepRow(90, 640, 900, 1, 'Open it once, online', 'The whole app downloads into your browser', false);
+      stepRow(90, 790, 900, 2, 'Then measure with no internet', 'Free, no account, no data used', true);
+      center('FIRST LOAD NEEDS A CONNECTION \u00b7 AFTER THAT, NOTHING DOES', 1002, '600 19px ' + MONO, FAINT);
+    }
+  },
+
+  /* ---------------- stories ---------------- */
+  {
+    file: 'ig-story-hero', w: 1080, h: 1920, draw() {
+      bg(720);
+      icon((W - 360) / 2, 300, 360);
+      const ww = wordmarkWidth(124, 66);
+      wordmark((W - ww) / 2, 800, 124, 66);
+      center('100% Free RTA', 900, '700 76px ' + FONT, INK);
+      center('and Spectrograph', 986, '700 76px ' + FONT, INK);
+      center('in your browser', 1062, '400 40px ' + FONT, MUTED);
+      centerPills(['1/48 oct', 'Drag to rewind', 'Target curves'], 1136, 27, 62, 16);
+      center('Link in bio', 1442, '700 44px ' + FONT, BRIGHT);
+      center('FREE FOREVER · NO SIGN-UP', 1506, '600 24px ' + MONO, FAINT);
+    }
+  },
+  {
+    file: 'ig-story-spectro', w: 1080, h: 1920, draw() {
+      bg(820);
+      center('New: drag the', 330, '700 72px ' + FONT, INK);
+      center('waterfall back', 414, '700 72px ' + FONT, INK);
+      center('in time', 498, '700 72px ' + FONT, BRIGHT);
+      waterfall(90, 600, 900, 560);
+      sliders(96, 1198, 888, '-60', '-10', 27);
+      g.fillStyle = INK;
+      g.font = '600 42px ' + FONT;
+      g.textAlign = 'center';
+      g.fillText('Touch it for Hz and level', W / 2, 1340);
+      g.fillStyle = MUTED;
+      g.font = '400 34px ' + FONT;
+      g.fillText('Level window sits on the graph', W / 2, 1396);
+      g.textAlign = 'left';
+      centerPills(['Android tablets', 'Any browser'], 1430, 25, 58, 14);
+    }
+  },
+  {
+    file: 'ig-story-honest', w: 1080, h: 1920, draw() {
+      bg(700);
+      center('A real analyzer.', 560, '700 84px ' + FONT, INK);
+      center('No licence fee.', 660, '700 84px ' + FONT, INK);
+      center('No lock-in.', 760, '700 84px ' + FONT, INK);
+      g.fillStyle = MUTED;
+      g.font = '400 36px ' + FONT;
+      g.textAlign = 'center';
+      wrapText('1/48-octave RTA, spectrograph with rewind, live-sound and cinema targets, captured traces — running on the tablet you already own.', W / 2, 880, W - 240, 54);
+      g.textAlign = 'left';
+      centerPills(['100% free', 'No account', 'Offline ready'], 1130, 28, 64, 16);
+      const ww = wordmarkWidth(64, 34);
+      wordmark((W - ww) / 2, 1420, 64, 34);
+    }
+  },
+  {
+    file: 'ig-story-offline', w: 1080, h: 1920, draw() {
+      bg(760);
+      const ww = wordmarkWidth(52, 28);
+      wordmark((W - ww) / 2, 396, 52, 28);
+      center('Online once.', 520, '700 86px ' + FONT, INK);
+      center('Offline after.', 618, '700 86px ' + FONT, BRIGHT);
+      wifiOff(W / 2, 724, 168);
+      g.fillStyle = MUTED;
+      g.font = '400 36px ' + FONT;
+      g.textAlign = 'center';
+      wrapText('The first open downloads the app into your browser. After that everything \u2014 mic, RTA, spectrograph, traces \u2014 runs on the tablet.', W / 2, 868, W - 240, 50);
+      g.textAlign = 'left';
+      stepRow(96, 1036, 888, 1, 'First open: online', 'Downloads the app into the browser', false);
+      stepRow(96, 1186, 888, 2, 'Every time after: no internet', 'Wi-Fi and mobile data can stay off', true);
+      center('FIRST LOAD NEEDS A CONNECTION \u00b7 AFTER THAT, NOTHING DOES', 1356, '600 21px ' + MONO, FAINT);
+      center('Link in bio', 1462, '700 46px ' + FONT, BRIGHT);
+    }
+  },
+  {
+    file: 'ig-story-qr', w: 1080, h: 1920, draw() {
+      bg(760);
+      center('Open it in ten seconds', 400, '700 62px ' + FONT, INK);
+      const plate = 600, px = (W - plate) / 2, py = 500;
+      rr(px - 30, py - 30, plate + 60, plate + 60, 40);
+      g.fillStyle = '#ffffff';
+      g.fill();
+      if (QR) g.drawImage(QR, px, py, plate, plate);
+      center('Scan to open', 1260, '700 64px ' + FONT, INK);
+      center('Point your camera here — no app store, no sign-up', 1324, '400 34px ' + FONT, MUTED);
+      const ww = wordmarkWidth(56, 30);
+      wordmark((W - ww) / 2, 1436, 56, 30);
+    }
+  }
+];
+
+function wrapText(text, cx, y, maxW, lh) {
+  const words = text.split(' ');
+  let line = '', ly = y;
+  for (const wd of words) {
+    const test = line ? line + ' ' + wd : wd;
+    if (g.measureText(test).width > maxW && line) {
+      g.fillText(line, cx, ly);
+      line = wd;
+      ly += lh;
+    } else line = test;
+  }
+  if (line) g.fillText(line, cx, ly);
+  return ly;
+}
+
+/* ---------- run ---------- */
+function loadImage(src) {
+  return new Promise((res) => {
+    const img = new Image();
+    img.onload = () => res(img);
+    img.onerror = () => res(null);
+    img.src = src;
+  });
+}
+
+(async () => {
+  QR = await loadImage('../qr/rta-daddy-qr.png');
+  out.textContent = 'qr: ' + (QR ? QR.naturalWidth + 'x' + QR.naturalHeight : 'MISSING') + '\n';
+  const saved = [];
+  for (const v of variants) {
+    g = c.getContext('2d');
+    c.width = v.w; c.height = v.h;
+    W = v.w; H = v.h;
+    g.textBaseline = 'alphabetic';
+    g.textAlign = 'left';
+    v.draw();
+    const blob = await new Promise((res) => c.toBlob(res, 'image/png'));
+    try {
+      const r = await fetch('/save?name=' + v.file, { method: 'POST', body: blob });
+      const j = await r.json();
+      saved.push({ file: v.file, w: v.w, h: v.h, bytes: j.bytes });
+      out.textContent += 'saved ' + v.file + '.png  ' + v.w + 'x' + v.h + '  ' + (j.bytes / 1024).toFixed(0) + ' KiB\n';
+    } catch (e) {
+      out.textContent += 'FAILED ' + v.file + ': ' + e.message + '\n';
+      saved.push({ file: v.file, error: e.message });
+    }
+  }
+  out.textContent += 'done: ' + saved.length + ' files';
+  window.__adsDone = saved;
+})();
+</script>
+</body>
+</html>

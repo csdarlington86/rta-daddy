@@ -1,0 +1,258 @@
+/* RTA Daddy — marketing landing page.
+   Deliberately separate from app.css: the analyzer pins the body to the
+   viewport with overflow hidden, which would break a scrolling page. */
+
+:root{
+  --bg:#070a08;
+  --panel:#0d1210;
+  --line:rgba(255,255,255,.09);
+  --ink:#eaf3ee;
+  --dim:#8fa39a;
+  --accent:#12b312;
+  --bright:#00e676;
+  --mono:ui-monospace,SFMono-Regular,Consolas,monospace;
+}
+
+*{box-sizing:border-box}
+
+html{scroll-behavior:smooth}
+
+body{
+  margin:0;
+  background:var(--bg);
+  color:var(--ink);
+  font:400 17px/1.6 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  -webkit-text-size-adjust:100%;
+}
+
+a{color:inherit}
+img{display:block}
+
+.wrap{
+  max-width:1000px;
+  margin:0 auto;
+  padding:0 22px;
+}
+
+/* ---------- sticky top bar ---------- */
+.bar{
+  position:sticky;top:0;z-index:20;
+  display:flex;align-items:center;gap:14px;
+  flex-wrap:wrap; /* on very narrow screens the CTA drops under the brand instead of overflowing */
+  padding:10px 22px;
+  background:rgba(7,10,8,.86);
+  backdrop-filter:blur(10px);
+  border-bottom:1px solid var(--line);
+}
+.barBrand{
+  display:flex;align-items:center;gap:10px;
+  text-decoration:none;font-weight:300;letter-spacing:.02em;font-size:17px;
+}
+.barBrand b{color:var(--bright);font-weight:600;letter-spacing:.08em;font-size:13px;margin-left:4px}
+.barBrand img{border-radius:8px}
+.barCta{
+  margin-left:auto;text-decoration:none;
+  font-size:14px;font-weight:600;
+  color:#03130a;background:var(--bright);
+  padding:12px 18px;border-radius:999px;
+  white-space:nowrap;
+}
+.barCta:hover{filter:brightness(1.08)}
+
+/* ---------- hero ---------- */
+.hero{
+  position:relative;overflow:hidden;
+  padding:64px 0 74px;
+  background:
+    radial-gradient(900px 460px at 78% 18%,rgba(0,230,118,.13),rgba(0,230,118,0) 70%),
+    linear-gradient(180deg,#0b1210 0%,var(--bg) 78%);
+  border-bottom:1px solid var(--line);
+}
+.hero::before{
+  content:"";position:absolute;inset:0;
+  background-image:linear-gradient(rgba(255,255,255,.035) 1px,transparent 1px),
+                   linear-gradient(90deg,rgba(255,255,255,.035) 1px,transparent 1px);
+  background-size:56px 56px;
+  mask-image:linear-gradient(180deg,rgba(0,0,0,.55),transparent 72%);
+  pointer-events:none;
+}
+.hero .wrap{position:relative;z-index:2}
+
+.brandRow{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.mark{border-radius:14px}
+.wordmark{font-size:30px;font-weight:300;letter-spacing:.02em}
+.wordmark span{color:var(--bright);font-weight:600;letter-spacing:.08em;font-size:18px;margin-left:8px}
+.freePill{
+  font:600 12px/1 var(--mono);letter-spacing:.08em;text-transform:uppercase;
+  color:var(--bright);border:1px solid rgba(0,230,118,.45);
+  background:rgba(0,230,118,.08);
+  padding:7px 11px;border-radius:999px;
+}
+
+.hero h1{
+  margin:26px 0 0;
+  font-size:clamp(34px,6.4vw,58px);
+  line-height:1.06;
+  font-weight:300;
+  letter-spacing:-.015em;
+}
+.lede{
+  max-width:44em;margin:18px 0 0;
+  font-size:clamp(16px,2.2vw,19px);
+  color:#c8d8cf;
+}
+
+.ctaRow{display:flex;gap:12px;flex-wrap:wrap;margin:30px 0 0}
+.btn{
+  display:inline-block;text-decoration:none;font-weight:600;
+  padding:14px 22px;border-radius:12px;font-size:16px;
+  border:1px solid transparent;
+}
+.btn.primary{background:var(--bright);color:#03130a}
+.btn.primary:hover{filter:brightness(1.08)}
+.btn.ghost{border-color:var(--line);color:var(--ink);background:rgba(255,255,255,.03)}
+.btn.ghost:hover{background:rgba(255,255,255,.07)}
+
+.chips{display:flex;flex-wrap:wrap;gap:9px;list-style:none;padding:0;margin:30px 0 0}
+.chips li{
+  font:600 12.5px/1 var(--mono);letter-spacing:.02em;
+  color:#b9f5ce;background:rgba(0,230,118,.09);
+  border:1px solid rgba(0,230,118,.32);
+  padding:9px 13px;border-radius:999px;
+}
+.micro{
+  margin:26px 0 0;
+  font:400 13px/1.5 var(--mono);color:var(--dim);
+}
+
+/* decorative spectrum along the hero floor */
+.heroBars{
+  position:absolute;left:0;right:0;bottom:0;height:120px;
+  display:flex;align-items:flex-end;gap:6px;
+  padding:0 22px;opacity:.22;pointer-events:none;
+}
+.heroBars i{
+  flex:1;display:block;
+  height:calc(var(--h) * 100%);
+  background:linear-gradient(180deg,var(--accent),rgba(18,179,18,.35));
+  border-top:2px solid #5aeb5a;
+  border-radius:2px 2px 0 0;
+}
+
+/* ---------- sections ---------- */
+main{max-width:1044px;margin:0 auto;padding:0 22px}
+
+.sec{padding:64px 0 8px;border-bottom:1px solid var(--line)}
+.sec:last-of-type{border-bottom:0}
+.sec h2{
+  margin:0;font-size:clamp(24px,3.4vw,32px);font-weight:300;letter-spacing:-.01em;
+}
+.sub{color:var(--dim);margin:8px 0 26px;font-size:15.5px}
+
+.cards{
+  display:grid;gap:14px;
+  /* min() keeps the track no wider than the column so cards never overflow a phone */
+  grid-template-columns:repeat(auto-fit,minmax(min(240px,100%),1fr));
+  margin-bottom:26px;
+}
+.cards.two{grid-template-columns:repeat(auto-fit,minmax(min(300px,100%),1fr))}
+.card{
+  background:var(--panel);
+  border:1px solid var(--line);
+  border-radius:14px;
+  padding:20px 20px 18px;
+}
+.card h3{
+  margin:0 0 8px;font-size:16px;font-weight:600;letter-spacing:.01em;
+  color:#dff7e8;
+}
+.card h3::before{
+  content:"";display:inline-block;width:8px;height:8px;border-radius:2px;
+  background:var(--accent);margin-right:9px;vertical-align:1px;
+}
+.card p{margin:0;color:#b6c7bd;font-size:15px}
+.card ul{margin:0;padding:0;list-style:none}
+.card li{padding:7px 0;border-top:1px solid rgba(255,255,255,.06);font-size:15px;color:#b6c7bd}
+.card li:first-child{border-top:0;padding-top:0}
+.card b{color:#e7f7ee;font-weight:600}
+.gestures{margin-bottom:26px}
+
+.steps{
+  margin:0 0 26px;padding:0;list-style:none;counter-reset:step;
+}
+.steps li{
+  counter-increment:step;
+  position:relative;
+  padding:16px 0 16px 58px;
+  border-top:1px solid var(--line);
+  color:#b6c7bd;font-size:15.5px;
+}
+.steps li:first-child{border-top:0}
+.steps li::before{
+  content:counter(step);
+  position:absolute;left:0;top:14px;
+  width:34px;height:34px;border-radius:10px;
+  display:grid;place-items:center;
+  font:600 15px/1 var(--mono);color:var(--bright);
+  background:rgba(0,230,118,.10);
+  border:1px solid rgba(0,230,118,.35);
+}
+.steps b{color:#eaf3ee;font-weight:600}
+.steps em{color:#d6ffe6;font-style:normal;border-bottom:1px dotted rgba(0,230,118,.6)}
+
+.note{
+  margin:0 0 30px;padding:13px 16px;
+  font-size:14px;color:#b6c7bd;
+  background:rgba(255,255,255,.03);
+  border:1px solid var(--line);border-left:3px solid var(--accent);
+  border-radius:10px;
+}
+
+/* ---------- faq ---------- */
+details{
+  border-top:1px solid var(--line);
+  padding:16px 0;
+}
+details:last-of-type{border-bottom:1px solid var(--line);margin-bottom:30px}
+summary{
+  cursor:pointer;font-weight:600;font-size:16.5px;color:#e7f7ee;
+  list-style:none;
+}
+summary::-webkit-details-marker{display:none}
+summary::after{content:"+";float:right;color:var(--bright);font-weight:400;font-size:20px;line-height:1}
+details[open] summary::after{content:"\2212"}
+details p{margin:10px 0 0;color:#b6c7bd;font-size:15.5px;max-width:60em}
+
+/* ---------- final cta / footer ---------- */
+.finalCta{
+  text-align:center;padding:70px 0 80px;
+}
+.finalCta h2{margin:0;font-size:clamp(26px,4vw,36px);font-weight:300}
+.finalCta p{margin:10px 0 24px;color:var(--dim)}
+
+footer{
+  border-top:1px solid var(--line);
+  padding:22px;
+  display:flex;gap:16px;flex-wrap:wrap;align-items:center;justify-content:center;
+  font:400 13px/1.5 var(--mono);color:var(--dim);
+  background:#060907;
+}
+footer a{color:var(--bright);text-decoration:none}
+footer a:hover{text-decoration:underline}
+footer .hits{
+  color:#9de8b6;font-variant-numeric:tabular-nums;
+}
+footer .hits:not(:empty)::before{content:"·";margin-right:9px;color:var(--dim)}
+
+@media (max-width:560px){
+  .hero{padding:44px 0 56px}
+  .sec{padding:48px 0 8px}
+  .barCta{padding:12px 15px;font-size:13.5px}
+  .wordmark{font-size:24px}
+  .wordmark span{font-size:15px}
+  .mark{width:52px;height:52px}
+}
+
+@media (prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto}
+}
