@@ -1,0 +1,39 @@
+name: Build check
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Check JavaScript syntax
+        run: |
+          node --check js/app.js
+          node --check sw.js
+          node --check deploy/worker.js
+
+      - name: Build deploy assets
+        run: node tools/build-dist.js
+
+      - name: Verify committed deploy assets are current
+        run: |
+          if ! git diff --exit-code -- deploy/dist; then
+            echo "::error::deploy/dist is stale. Run node tools/build-dist.js and commit the rebuilt files."
+            exit 1
+          fi

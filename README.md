@@ -7,7 +7,17 @@ It is an independent implementation: no Rational Acoustics code, assets or algor
 and it is not affiliated with or endorsed by them. The feature set was matched from their
 published comparison table, FAQ and support articles, and the layout from their screenshots.
 
-Live build: https://site-60ea1d07501e4fd1a0d91f5bd0cc5293.freebuff.page
+Live app: https://rtadaddy.freebuff.page
+
+## Source and downloads
+
+- Repository: https://github.com/csdarlington86/rta-daddy
+- Download ZIP: https://github.com/csdarlington86/rta-daddy/archive/refs/heads/master.zip
+- Clone: `git clone https://github.com/csdarlington86/rta-daddy.git`
+
+The GitHub repository is the public source and backup. The live app is built into
+`deploy/dist` and published separately through Freebuff Sites (Cloudflare Workers);
+pushing to GitHub does not deploy it by itself.
 
 ---
 
@@ -142,14 +152,33 @@ The microphone needs a **secure context**, so use the published HTTPS URL, or fo
 the origin to `chrome://flags/#unsafely-treat-insecure-origin-as-secure`. Then **⋮ → Add to Home
 screen** for a fullscreen, offline-capable app. On Fire OS use Chrome, not Silk.
 
-### Deploying changes
+### Updating and deploying
+
+The GitHub repository is the source of truth. The live app is served from the built
+`deploy/dist` directory through Freebuff Sites (Cloudflare Workers), so a Git push
+does not publish the site by itself.
 
 ```bash
-node tools/build-dist.js          # rebuilds deploy/dist and validates every reference
+cd rta
+node tools/serve.js 8123             # test at http://localhost:8123/
+node --check js/app.js
+node --check sw.js
+node --check deploy/worker.js
+node tools/build-dist.js             # rebuild deploy/dist and validate references
+
+git add -A
+git commit -m "Describe the change"
+git push                             # public GitHub repository
+git push origin master               # external F: backup
 ```
 
-then deploy `deploy/manifest.json` again. The service worker cache name (`rta-daddy-v4` in `sw.js`)
-should be bumped when the shell changes, or clients may keep serving the old bundle.
+Bump `CACHE` in `sw.js` (`rta-daddy-v21` at the time of writing) whenever the app
+shell changes, or installed PWAs may keep serving the old bundle.
+
+Then publish the rebuilt `deploy/manifest.json` to the existing Freebuff Sites
+production environment at <https://rtadaddy.freebuff.page>. The GitHub Actions
+workflow in `.github/workflows/build.yml` checks syntax and rebuilds `deploy/dist`
+on every push to `master`; it does not publish the site.
 
 ---
 
@@ -230,6 +259,7 @@ rta/
   icons/                generated PNG icons + SVG
   deploy/worker.js      static-asset Worker + visit counter for hosting
   deploy/manifest.json  deploy manifest
+  .github/workflows/build.yml  syntax/build check on push
   LICENSE               MIT
   social/               Instagram artwork + caption sheet
   tools/make-icons.js   regenerates the PNGs
