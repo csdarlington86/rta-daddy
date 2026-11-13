@@ -42,17 +42,32 @@
     9: { lo: 5.60, hi: 0.60 },
     10: { lo: 10.00, hi: 1.00 }
   };
-  const AVG_ALIAS = { none: '1', fast: '2', slow: '6', infinite: 'inf' };
+  const AVG_ALIAS = { none: '1', infinite: 'inf' };
 
   function normalizeAveraging(v) {
     const s = String(v == null ? '' : v);
+    if (s === 'fast' || s === 'slow' || s === 'inf') return s;
     if (AVG_ALIAS[s]) return AVG_ALIAS[s];
-    if (s === 'inf') return 'inf';
     if (/^\d+$/.test(s)) {
       const n = Number(s);
       if (n >= 1 && n <= 10) return String(n);
     }
     return '6';
+  }
+
+  /* Fast and Slow are the two named basics. They use the same math as scale
+     settings 2 and 6, but stay separate values so the advanced select can show
+     the user's exact choice. */
+  function effectiveAveraging() {
+    if (S.averaging === 'fast') return '2';
+    if (S.averaging === 'slow') return '6';
+    return S.averaging;
+  }
+
+  function basicAveraging(v) {
+    if (v === 'slow' || v === 'fast' || v === 'inf') return v;
+    const n = Number(v);
+    return (n >= 1 && n <= 3) ? 'fast' : 'slow';
   }
 
   const ICON_PAUSE = '<svg viewBox="0 0 24 24" width="22" height="22"><g fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></g></svg>';
@@ -247,7 +262,7 @@
   let avgTau = new Float64Array(0);
   function refreshAvgTau() {
     avgTau = new Float64Array(bands.length);
-    const p = AVG_WEIGHTED[S.averaging];
+    const p = AVG_WEIGHTED[effectiveAveraging()];
     if (!p) return;
     const ratio = p.hi / p.lo;
     for (let i = 0; i < bands.length; i++) {
@@ -377,7 +392,7 @@
     ensureAvg(a, n);
     const power = a.scratch;
     for (let i = 0; i < n; i++) power[i] = Math.pow(10, clampDB(raw[i]) * 0.1);
-    const mode = S.averaging;
+    const mode = effectiveAveraging();
 
     if (!a.ready) {
       a.data.set(raw);
@@ -1980,6 +1995,12 @@
   }
 
   /* ---------------- settings plumbing ---------------- */
+  function syncAveragingControls() {
+    const basic = basicAveraging(S.averaging);
+    $$('.avgBasic').forEach((el) => { el.value = basic; });
+    $$('.avgAdv').forEach((el) => { el.value = S.averaging; });
+  }
+
   function syncValues() {
     $$('[data-setting]').forEach((el) => {
       const k = el.dataset.setting;
@@ -1993,6 +2014,7 @@
       const k = sp.dataset.for;
       if (k in S) sp.textContent = String(S[k]);
     });
+    syncAveragingControls();
     const rv = $('#railTrimVal');
     if (rv) {
       const t = activeTrim();
@@ -2106,6 +2128,12 @@
         else v = el.value;
         setSetting(k, v);
       });
+    });
+
+    /* The two averaging selects share one saved value: the basic one shows a
+       category (Fast/Slow/Inf), the advanced one shows the exact scale entry. */
+    $$('.avgBasic, .avgAdv').forEach((el) => {
+      el.addEventListener('change', () => setSetting('averaging', el.value));
     });
 
     $$('.seg[data-seg]').forEach((seg) => {

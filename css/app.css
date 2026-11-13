@@ -402,6 +402,8 @@ body{position:fixed;inset:0;overflow:hidden}
 /* Easy mode: hide the technical layer and the spectrograph tuning tab. The
    on-plot min/max handles stay available, so nothing is lost from the view. */
 html[data-ui="easy"] [data-advanced]{display:none !important}
+html[data-ui="advanced"] .avgBasic{display:none !important}
+html[data-ui="easy"] .avgAdv{display:none !important}
 html[data-ui="easy"] .seg[data-seg="tab"] .segBtn[data-tab="spec"],
 html[data-ui="easy"] .sheetBody > .tab[data-tab="spec"]{display:none !important}
 .uiTip{

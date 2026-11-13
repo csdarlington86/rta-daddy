@@ -35,19 +35,32 @@
 
     <div class="ctl">
       <span class="ctlLabel">Averaging:</span>
-      <select id="avgSel" class="sel avgSel" data-setting="averaging"
-        title="1-3: FIFO frame averaging. 4-10: frequency-weighted, longer lows and shorter highs. 6 recommended. Inf: running average."
-        aria-label="Temporal averaging">
-        <option value="1">1 · Min</option>
-        <option value="2">2 · Low</option>
-        <option value="3">3 · Mod-low</option>
-        <option value="4">4 · Weighted</option>
-        <option value="5">5 · More</option>
-        <option value="6">6 · Med/high ★</option>
-        <option value="7">7 · High</option>
-        <option value="8">8 · Very high</option>
-        <option value="9">9 · Extreme</option>
-        <option value="10">10 · Max</option>
+      <select id="avgSelBasic" class="sel avgSel avgBasic"
+        title="Slow is steady, Fast is responsive, Inf keeps a running average."
+        aria-label="Basic temporal averaging">
+        <option value="slow">Slow</option>
+        <option value="fast">Fast</option>
+        <option value="inf">Inf</option>
+      </select>
+      <select id="avgSel" class="sel avgSel avgAdv"
+        title="Full scale: Slow/Fast, 1-10, and Inf. 1-3: FIFO frames. 4-10: frequency-weighted. 6 recommended."
+        aria-label="Advanced temporal averaging">
+        <optgroup label="Basic">
+          <option value="slow">Slow</option>
+          <option value="fast">Fast</option>
+        </optgroup>
+        <optgroup label="1–10 scale">
+          <option value="1">1 · Min</option>
+          <option value="2">2 · Low</option>
+          <option value="3">3 · Mod-low</option>
+          <option value="4">4 · Weighted</option>
+          <option value="5">5 · More</option>
+          <option value="6">6 · Med/high ★</option>
+          <option value="7">7 · High</option>
+          <option value="8">8 · Very high</option>
+          <option value="9">9 · Extreme</option>
+          <option value="10">10 · Max</option>
+        </optgroup>
         <option value="inf">Inf · Infinite</option>
       </select>
     </div>
@@ -301,24 +314,38 @@
     <div class="tab hidden" data-tab="rta">
       <div class="row">
         <span class="rowLabel">Temporal averaging</span>
-        <select id="avgSelSettings" class="sel" data-setting="averaging">
-          <option value="1">1 — Minimum averaging (very responsive)</option>
-          <option value="2">2 — Low averaging</option>
-          <option value="3">3 — Moderate-low averaging</option>
-          <option value="4">4 — Weighted averaging</option>
-          <option value="5">5 — More averaging</option>
-          <option value="6">6 — Medium/high averaging (recommended)</option>
-          <option value="7">7 — High averaging</option>
-          <option value="8">8 — Very high averaging</option>
-          <option value="9">9 — Extremely high averaging</option>
-          <option value="10">10 — Maximum averaging</option>
+        <select id="avgBasicSettings" class="sel avgBasic" aria-label="Basic temporal averaging">
+          <option value="slow">Slow</option>
+          <option value="fast">Fast</option>
+          <option value="inf">Inf — Infinite</option>
+        </select>
+        <select id="avgAdvSettings" class="sel avgAdv" aria-label="Advanced temporal averaging">
+          <optgroup label="Basic">
+            <option value="slow">Slow</option>
+            <option value="fast">Fast</option>
+          </optgroup>
+          <optgroup label="1–10 scale">
+            <option value="1">1 — Minimum averaging (very responsive)</option>
+            <option value="2">2 — Low averaging</option>
+            <option value="3">3 — Moderate-low averaging</option>
+            <option value="4">4 — Weighted averaging</option>
+            <option value="5">5 — More averaging</option>
+            <option value="6">6 — Medium/high averaging (recommended)</option>
+            <option value="7">7 — High averaging</option>
+            <option value="8">8 — Very high averaging</option>
+            <option value="9">9 — Extremely high averaging</option>
+            <option value="10">10 — Maximum averaging</option>
+          </optgroup>
           <option value="inf">Inf — Infinite running average</option>
         </select>
       </div>
-      <p class="fine">1–3 are FIFO averages of 2, 4 or 8 FFT analysis frames; the oldest
-        frame drops out as a new one arrives. 4–10 are frequency-weighted: lows average
-        longer than highs. <b>6</b> is the recommended general starting point; <b>Inf</b>
-        keeps a running average until Reset averaging.</p>
+      <p class="fine avgBasic">Fast responds quickest, Slow is a steadier average, and Inf
+        keeps a running average until Reset averaging. Switch Settings mode to Advanced
+        for the full 1–10 scale.</p>
+      <p class="fine avgAdv">1–3 are FIFO averages of 2, 4 or 8 FFT analysis frames; the
+        oldest frame drops out as a new one arrives. 4–10 are frequency-weighted: lows
+        average longer than highs. <b>6</b> is the recommended general starting point;
+        <b>Inf</b> keeps a running average until Reset averaging.</p>
       <div class="row"><button class="btn wide" id="btnResetAvg">Reset averaging</button></div>
       <div class="row" data-advanced>
         <span class="rowLabel">Top Level</span>

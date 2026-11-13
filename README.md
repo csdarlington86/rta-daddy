@@ -37,7 +37,10 @@ pushing to GitHub does not deploy it by itself.
   semitones
 - **Pause measurement**, **track peak**, a peak-hold trace with a one-tap reset, full-screen views
 - **View reset** — one button puts the zoom, Y offset and spectrograph window back to defaults
-- **Temporal averaging** — 1–10 plus **Inf**, on the main page and in Settings:
+- **Temporal averaging** — **Fast, Slow and Inf** in Easy mode, with the full **1–10 plus Inf**
+  scale in Advanced mode:
+  - **Fast** — quick FIFO averaging (scale setting 2)
+  - **Slow** — steadier frequency-weighted averaging (scale setting 6)
   - **1–3** — FIFO averages of 2, 4 or 8 FFT analysis frames; the oldest frame drops out
   - **4–10** — frequency-weighted exponential averaging, with longer time constants
     in the lows and shorter ones in the highs
@@ -176,7 +179,7 @@ git push                             # public GitHub repository
 git push origin master               # external F: backup
 ```
 
-Bump `CACHE` in `sw.js` (`rta-daddy-v22` at the time of writing) whenever the app
+Bump `CACHE` in `sw.js` (`rta-daddy-v23` at the time of writing) whenever the app
 shell changes, or installed PWAs may keep serving the old bundle.
 
 Or do the checks, build, commit, and both backup pushes in one command:
@@ -223,7 +226,7 @@ on every push to `master`; it does not publish the site.
 |---|---|---|
 | Platform | native iOS/Android app, paid (sub or $149 lifetime) | web app / PWA, free, runs anywhere with Chrome |
 | RTA + banding 1/48–1 oct | yes | yes |
-| Averaging | 1–10 + Inf, frequency-weighted | 1–10 + Inf: FIFO 1–3, frequency-weighted 4–10 |
+| Averaging | 1–10 + Inf, frequency-weighted | Easy: Fast / Slow / Inf; Advanced: 1–10 + Inf |
 | Spectrograph | 1000 slices, rewind, dynamic range | same |
 | Frequency scale | 1/3 oct, decade, octave, linear | same |
 | Bars/lines, thickness, grid interval | yes | yes |
