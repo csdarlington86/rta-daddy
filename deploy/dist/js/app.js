@@ -48,7 +48,7 @@
   const AVG_EFFECTIVE = { fast: '2', slow: '6' };
 
   function normalizeAveraging(v) {
-    const s = String(v == null ? '' : v);
+    const s = String(v ?? '');
     if (s === 'none') return '1';
     if (s === 'infinite') return 'inf';
     if (s === 'fast' || s === 'slow' || s === 'inf') return s;
@@ -60,12 +60,12 @@
     return AVG_EFFECTIVE[v] || v;
   }
 
-  /* Basic has three choices: scale 1-3 reads as Fast, 4-10 as Slow, and Inf
-     stays Inf. The saved advanced value itself is never rewritten. */
-  function basicAveraging(v) {
-    const e = effectiveAveraging(v);
+  /* Fast is the FIFO group, Slow is weighted, and Inf stays Inf. The saved
+     advanced value itself is never rewritten. */
+  function basicAveraging() {
+    const e = effectiveAveraging();
     if (e === 'inf') return e;
-    return Number(e) > 3 ? 'slow' : 'fast';
+    return AVG_FIFO_FRAMES[e] ? 'fast' : 'slow';
   }
 
   const ICON_PAUSE = '<svg viewBox="0 0 24 24" width="22" height="22"><g fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></g></svg>';
@@ -115,8 +115,8 @@
 
   const saved = loadJSON('rtapro.settings.v1', {});
   const S = Object.assign({}, DEFAULTS, saved);
-  /* Older builds used none/fast/slow/infinite. Map those to the new scale so
-     an installed PWA never opens with an empty averaging select. */
+  /* Persist a migrated value so an installed PWA never opens with an empty
+     averaging select. */
   const savedAvg = S.averaging;
   S.averaging = normalizeAveraging(S.averaging);
   if (S.averaging !== savedAvg) saveSettings();
@@ -1993,20 +1993,14 @@
   }
 
   /* ---------------- settings plumbing ---------------- */
-  /* Basic selects show a category while Advanced selects show the exact saved
-     value, so averaging gets its own sync instead of the generic loop. */
-  function syncAveragingControls() {
-    const basic = basicAveraging(S.averaging);
-    $$('[data-avg-view]').forEach((el) => {
-      el.value = el.dataset.avgView === 'basic' ? basic : S.averaging;
-    });
-  }
-
   function syncValues() {
     $$('[data-setting]').forEach((el) => {
       const k = el.dataset.setting;
-      if (!(k in S) || k === 'averaging') return;
-      const v = S[k];
+      if (!(k in S)) return;
+      /* Basic averaging shows a category; Advanced shows the exact value. */
+      const v = k === 'averaging' && el.dataset.avgView === 'basic'
+        ? basicAveraging()
+        : S[k];
       if (el.type === 'checkbox') el.checked = !!v;
       else if (document.activeElement !== el) el.value = String(v);
       else if (el.tagName === 'SELECT') el.value = String(v);
@@ -2015,7 +2009,6 @@
       const k = sp.dataset.for;
       if (k in S) sp.textContent = String(S[k]);
     });
-    syncAveragingControls();
     const rv = $('#railTrimVal');
     if (rv) {
       const t = activeTrim();
