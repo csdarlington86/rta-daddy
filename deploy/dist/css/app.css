@@ -56,6 +56,7 @@ body{position:fixed;inset:0;overflow:hidden}
 }
 .ctl{display:flex;align-items:center;gap:6px}
 .ctlLabel{color:var(--dim);font-size:12px;letter-spacing:.02em}
+.avgSel{min-width:124px}
 .sel{
   appearance:none;-webkit-appearance:none;
   background:var(--chrome2) url("data:image/svg+xml;charset=utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath fill='%23b9b9b9' d='M0 0h10L5 6z'/%3E%3C/svg%3E") no-repeat right 8px center;
@@ -519,6 +520,7 @@ html[data-theme="light"] .empty{color:#6a6a70}
   #topbar{gap:6px;padding:5px 6px;min-height:48px}
   .ctlLabel{display:none}
   .sel{min-width:78px;font-size:12px;min-height:34px;padding:6px 22px 6px 8px}
+  .avgSel{min-width:106px}
   .readouts{gap:9px;margin-left:2px}
   .roK{font-size:9.5px}
   .roV{font-size:12.5px}

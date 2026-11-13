@@ -37,8 +37,12 @@ pushing to GitHub does not deploy it by itself.
   semitones
 - **Pause measurement**, **track peak**, a peak-hold trace with a one-tap reset, full-screen views
 - **View reset** — one button puts the zoom, Y offset and spectrograph window back to defaults
-- **Temporal averaging** — None / Fast / Slow / Infinite, with a one-tap reset for the
-  infinite average
+- **Temporal averaging** — 1–10 plus **Inf**, on the main page and in Settings:
+  - **1–3** — FIFO averages of 2, 4 or 8 FFT analysis frames; the oldest frame drops out
+  - **4–10** — frequency-weighted exponential averaging, with longer time constants
+    in the lows and shorter ones in the highs
+  - **6** — the recommended general starting point
+  - **Inf** — infinite running average, with a one-tap reset
 - **Easy and Advanced modes** — Easy is the default and shows only banding, averaging,
   input, peak hold, display and setups; Advanced reveals FFT size, levels, trims, spectrograph
   detail, target curves and EQ export. Nothing is duplicated, and the choice is remembered;
@@ -172,7 +176,7 @@ git push                             # public GitHub repository
 git push origin master               # external F: backup
 ```
 
-Bump `CACHE` in `sw.js` (`rta-daddy-v21` at the time of writing) whenever the app
+Bump `CACHE` in `sw.js` (`rta-daddy-v22` at the time of writing) whenever the app
 shell changes, or installed PWAs may keep serving the old bundle.
 
 Or do the checks, build, commit, and both backup pushes in one command:
@@ -219,7 +223,7 @@ on every push to `master`; it does not publish the site.
 |---|---|---|
 | Platform | native iOS/Android app, paid (sub or $149 lifetime) | web app / PWA, free, runs anywhere with Chrome |
 | RTA + banding 1/48–1 oct | yes | yes |
-| Averaging | None/Fast/Slow/Infinite | same |
+| Averaging | 1–10 + Inf, frequency-weighted | 1–10 + Inf: FIFO 1–3, frequency-weighted 4–10 |
 | Spectrograph | 1000 slices, rewind, dynamic range | same |
 | Frequency scale | 1/3 oct, decade, octave, linear | same |
 | Bars/lines, thickness, grid interval | yes | yes |

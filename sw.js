@@ -1,6 +1,6 @@
 /* Network-first: deploys land on the next load. Falls back to cache so the
    analyzer still works with no network on the tablet. */
-const CACHE = 'rta-daddy-v21';
+const CACHE = 'rta-daddy-v22';
 const ASSETS = [
   './',
   './index.html',

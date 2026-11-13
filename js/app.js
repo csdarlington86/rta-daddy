@@ -28,12 +28,39 @@
 
   const TRACE_COLORS = ['#e53935', '#9ccc65', '#d63ce6', '#40c4ff', '#ffb300', '#26a69a', '#f06292', '#7e57c2'];
 
+  /* Temporal averaging modes. 1-3 are FIFO frame averages: a fixed number of
+     FFT analysis frames, oldest dropped first. 4-10 are frequency-weighted
+     exponential averages: the low end gets a longer time constant than the
+     high end, which keeps room modes readable without smearing cymbals. */
+  const AVG_FIFO_FRAMES = { 1: 2, 2: 4, 3: 8 };
+  const AVG_WEIGHTED = {
+    4: { lo: 0.25, hi: 0.05 },
+    5: { lo: 0.50, hi: 0.08 },
+    6: { lo: 1.00, hi: 0.12 },
+    7: { lo: 1.80, hi: 0.20 },
+    8: { lo: 3.20, hi: 0.35 },
+    9: { lo: 5.60, hi: 0.60 },
+    10: { lo: 10.00, hi: 1.00 }
+  };
+  const AVG_ALIAS = { none: '1', fast: '2', slow: '6', infinite: 'inf' };
+
+  function normalizeAveraging(v) {
+    const s = String(v == null ? '' : v);
+    if (AVG_ALIAS[s]) return AVG_ALIAS[s];
+    if (s === 'inf') return 'inf';
+    if (/^\d+$/.test(s)) {
+      const n = Number(s);
+      if (n >= 1 && n <= 10) return String(n);
+    }
+    return '6';
+  }
+
   const ICON_PAUSE = '<svg viewBox="0 0 24 24" width="22" height="22"><g fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></g></svg>';
   const ICON_PLAY = '<svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M8 5l11 7-11 7z"/></svg>';
 
   /* ---------------- state ---------------- */
   const DEFAULTS = {
-    averaging: 'fast',
+    averaging: '6',
     banding: 3,
     scale: 'third',
     display: 'bars',
@@ -75,6 +102,11 @@
 
   const saved = loadJSON('rtapro.settings.v1', {});
   const S = Object.assign({}, DEFAULTS, saved);
+  /* Older builds used none/fast/slow/infinite. Map those to the new scale so
+     an installed PWA never opens with an empty averaging select. */
+  const savedAvg = S.averaging;
+  S.averaging = normalizeAveraging(S.averaging);
+  if (S.averaging !== savedAvg) saveSettings();
   /* saved settings from an older build have no per-input trims */
   if (!S.trims || typeof S.trims !== 'object') S.trims = {};
   if (!S.trimsB || typeof S.trimsB !== 'object') S.trimsB = {};
@@ -174,7 +206,10 @@
     return {
       freq: null,
       raw: new Float32Array(0),
-      avg: { data: null, sum: null, n: 0, ready: false },
+      avg: {
+        data: null, sum: null, power: null, scratch: null,
+        fifo: null, fifoSum: null, fifoN: 0, fifoPos: 0, n: 0, ready: false
+      },
       hold: null
     };
   }
@@ -196,8 +231,28 @@
       const a = CH[k].avg;
       a.ready = false;
       a.n = 0;
+      a.fifo = null;
+      a.fifoSum = null;
+      a.fifoN = 0;
+      a.fifoPos = 0;
+      a.power = null;
       if (a.sum) a.sum.fill(0);
       CH[k].hold = null;
+    }
+  }
+
+  /* Time constants are precomputed per band when the averaging mode or the
+     band grid changes. Low frequencies get the long constant; the top octave
+     gets the short one. */
+  let avgTau = new Float64Array(0);
+  function refreshAvgTau() {
+    avgTau = new Float64Array(bands.length);
+    const p = AVG_WEIGHTED[S.averaging];
+    if (!p) return;
+    const ratio = p.hi / p.lo;
+    for (let i = 0; i < bands.length; i++) {
+      const t = clamp(Math.log2(bands[i].fc / FMIN) / SPAN_LOG, 0, 1);
+      avgTau[i] = p.lo * Math.pow(ratio, t);
     }
   }
 
@@ -234,6 +289,7 @@
     CH.a.raw = new Float32Array(bands.length);
     CH.b.raw = new Float32Array(bands.length);
     mapBands();
+    refreshAvgTau();
     resetAvg();
     specReset();
   }
@@ -282,30 +338,91 @@
     return out;
   }
 
-  function averageInto(a, raw, dt) {
-    const n = raw.length;
+  function ensureAvg(a, n) {
     if (!a.data || a.data.length !== n) {
       a.data = new Float32Array(n);
-      a.sum = new Float32Array(n);
+      a.sum = new Float64Array(n);
+      a.scratch = new Float64Array(n);
       a.ready = false;
       a.n = 0;
+      a.fifo = null;
+      a.fifoSum = null;
+      a.fifoN = 0;
+      a.fifoPos = 0;
+      a.power = null;
+    } else {
+      if (!a.sum || a.sum.length !== n) a.sum = new Float64Array(n);
+      if (!a.scratch || a.scratch.length !== n) a.scratch = new Float64Array(n);
     }
+  }
+
+  function fifoInit(a, n, len) {
+    if (!a.fifo || a.fifo.length !== len || (a.fifo[0] && a.fifo[0].length !== n)) {
+      a.fifo = Array.from({ length: len }, () => new Float32Array(n));
+      a.fifoSum = new Float64Array(n);
+      a.fifoN = 0;
+      a.fifoPos = 0;
+    }
+  }
+
+  function powerDb(p) {
+    return p > 1e-18 ? 10 * Math.log10(p) : -180;
+  }
+
+  /* All averaging is in linear power, not dB: a 20 dB band and a 0 dB band
+     must average to the energy actually present, not the arithmetic midpoint
+     of their decibel values. */
+  function averageInto(a, raw, dt) {
+    const n = raw.length;
+    ensureAvg(a, n);
+    const power = a.scratch;
+    for (let i = 0; i < n; i++) power[i] = Math.pow(10, clampDB(raw[i]) * 0.1);
+    const mode = S.averaging;
+
     if (!a.ready) {
       a.data.set(raw);
-      a.sum.set(raw);
-      a.n = 1;
       a.ready = true;
+      a.n = 1;
+      if (mode === 'inf') {
+        a.sum.set(power);
+      } else if (AVG_FIFO_FRAMES[mode]) {
+        fifoInit(a, n, AVG_FIFO_FRAMES[mode]);
+        a.fifo[0].set(power);
+        a.fifoSum.set(power);
+        a.fifoN = 1;
+        a.fifoPos = 1 % a.fifo.length;
+      } else {
+        a.power = Float64Array.from(power);
+      }
       return a.data;
     }
-    if (S.averaging === 'none') {
-      a.data.set(raw);
-    } else if (S.averaging === 'infinite') {
+
+    if (mode === 'inf') {
       a.n++;
-      for (let i = 0; i < n; i++) { a.sum[i] += raw[i]; a.data[i] = a.sum[i] / a.n; }
+      for (let i = 0; i < n; i++) a.sum[i] += power[i];
+      const inv = 1 / a.n;
+      for (let i = 0; i < n; i++) a.data[i] = powerDb(a.sum[i] * inv);
+    } else if (AVG_FIFO_FRAMES[mode]) {
+      const len = a.fifo.length;
+      const slot = a.fifo[a.fifoPos];
+      if (a.fifoN < len) a.fifoN++;
+      else for (let i = 0; i < n; i++) a.fifoSum[i] -= slot[i];
+      slot.set(power);
+      for (let i = 0; i < n; i++) a.fifoSum[i] += power[i];
+      a.fifoPos = (a.fifoPos + 1) % len;
+      const inv = 1 / a.fifoN;
+      for (let i = 0; i < n; i++) a.data[i] = powerDb(a.fifoSum[i] * inv);
     } else {
-      const tau = S.averaging === 'fast' ? 0.125 : 1.0;
-      const k = 1 - Math.exp(-Math.max(dt, 0.001) / tau);
-      for (let i = 0; i < n; i++) a.data[i] += (raw[i] - a.data[i]) * k;
+      if (!a.power || a.power.length !== n) a.power = Float64Array.from(power);
+      else {
+        const tau = avgTau.length === n ? avgTau : null;
+        for (let i = 0; i < n; i++) {
+          const t = tau ? tau[i] : 0.25;
+          const k = 1 - Math.exp(-Math.max(dt, 0.001) / Math.max(t, 0.01));
+          const p = a.power[i] += (power[i] - a.power[i]) * k;
+          a.data[i] = powerDb(p);
+        }
+      }
     }
     return a.data;
   }
@@ -1945,7 +2062,7 @@
         rewound = 0;
         rewInput.max = String(Math.max(1, S.specHistory - 1));
         break;
-      case 'averaging': resetAvg(); break;
+      case 'averaging': refreshAvgTau(); resetAvg(); break;
       case 'peakHold': CH.a.hold = null; CH.b.hold = null; break;
       case 'trim':
       case 'trimB':
@@ -2323,6 +2440,7 @@
     if (!s || !s.values) return;
     const wasMode = S.chanMode;
     for (const k of SETUP_KEYS) if (k in s.values) S[k] = s.values[k];
+    S.averaging = normalizeAveraging(S.averaging);
     rebuildBands();
     forEachAnalyser((an) => { an.fftSize = S.fft; });
     if (audio.a1) CH.a.freq = new Float32Array(audio.a1.frequencyBinCount);
