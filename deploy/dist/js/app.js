@@ -42,32 +42,30 @@
     9: { lo: 5.60, hi: 0.60 },
     10: { lo: 10.00, hi: 1.00 }
   };
-  const AVG_ALIAS = { none: '1', infinite: 'inf' };
+  /* Older installs stored none/fast/slow/infinite. Keep Fast, Slow and Inf as
+     names so Advanced can show the exact choice; the retired none setting was
+     no averaging and is closest to scale 1. */
+  const AVG_EFFECTIVE = { fast: '2', slow: '6' };
 
   function normalizeAveraging(v) {
     const s = String(v == null ? '' : v);
+    if (s === 'none') return '1';
+    if (s === 'infinite') return 'inf';
     if (s === 'fast' || s === 'slow' || s === 'inf') return s;
-    if (AVG_ALIAS[s]) return AVG_ALIAS[s];
-    if (/^\d+$/.test(s)) {
-      const n = Number(s);
-      if (n >= 1 && n <= 10) return String(n);
-    }
-    return '6';
+    const n = Number(s);
+    return Number.isInteger(n) && n >= 1 && n <= 10 ? String(n) : '6';
   }
 
-  /* Fast and Slow are the two named basics. They use the same math as scale
-     settings 2 and 6, but stay separate values so the advanced select can show
-     the user's exact choice. */
-  function effectiveAveraging() {
-    if (S.averaging === 'fast') return '2';
-    if (S.averaging === 'slow') return '6';
-    return S.averaging;
+  function effectiveAveraging(v = S.averaging) {
+    return AVG_EFFECTIVE[v] || v;
   }
 
+  /* Basic has three choices: scale 1-3 reads as Fast, 4-10 as Slow, and Inf
+     stays Inf. The saved advanced value itself is never rewritten. */
   function basicAveraging(v) {
-    if (v === 'slow' || v === 'fast' || v === 'inf') return v;
-    const n = Number(v);
-    return (n >= 1 && n <= 3) ? 'fast' : 'slow';
+    const e = effectiveAveraging(v);
+    if (e === 'inf') return e;
+    return Number(e) > 3 ? 'slow' : 'fast';
   }
 
   const ICON_PAUSE = '<svg viewBox="0 0 24 24" width="22" height="22"><g fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></g></svg>';
@@ -1995,16 +1993,19 @@
   }
 
   /* ---------------- settings plumbing ---------------- */
+  /* Basic selects show a category while Advanced selects show the exact saved
+     value, so averaging gets its own sync instead of the generic loop. */
   function syncAveragingControls() {
     const basic = basicAveraging(S.averaging);
-    $$('.avgBasic').forEach((el) => { el.value = basic; });
-    $$('.avgAdv').forEach((el) => { el.value = S.averaging; });
+    $$('[data-avg-view]').forEach((el) => {
+      el.value = el.dataset.avgView === 'basic' ? basic : S.averaging;
+    });
   }
 
   function syncValues() {
     $$('[data-setting]').forEach((el) => {
       const k = el.dataset.setting;
-      if (!(k in S)) return;
+      if (!(k in S) || k === 'averaging') return;
       const v = S[k];
       if (el.type === 'checkbox') el.checked = !!v;
       else if (document.activeElement !== el) el.value = String(v);
@@ -2128,12 +2129,6 @@
         else v = el.value;
         setSetting(k, v);
       });
-    });
-
-    /* The two averaging selects share one saved value: the basic one shows a
-       category (Fast/Slow/Inf), the advanced one shows the exact scale entry. */
-    $$('.avgBasic, .avgAdv').forEach((el) => {
-      el.addEventListener('change', () => setSetting('averaging', el.value));
     });
 
     $$('.seg[data-seg]').forEach((seg) => {

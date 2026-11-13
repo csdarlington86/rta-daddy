@@ -179,7 +179,7 @@ git push                             # public GitHub repository
 git push origin master               # external F: backup
 ```
 
-Bump `CACHE` in `sw.js` (`rta-daddy-v23` at the time of writing) whenever the app
+Bump `CACHE` in `sw.js` (`rta-daddy-v24` at the time of writing) whenever the app
 shell changes, or installed PWAs may keep serving the old bundle.
 
 Or do the checks, build, commit, and both backup pushes in one command:

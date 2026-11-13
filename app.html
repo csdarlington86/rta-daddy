@@ -36,6 +36,7 @@
     <div class="ctl">
       <span class="ctlLabel">Averaging:</span>
       <select id="avgSelBasic" class="sel avgSel avgBasic"
+        data-setting="averaging" data-avg-view="basic"
         title="Slow is steady, Fast is responsive, Inf keeps a running average."
         aria-label="Basic temporal averaging">
         <option value="slow">Slow</option>
@@ -43,6 +44,7 @@
         <option value="inf">Inf</option>
       </select>
       <select id="avgSel" class="sel avgSel avgAdv"
+        data-setting="averaging" data-avg-view="advanced"
         title="Full scale: Slow/Fast, 1-10, and Inf. 1-3: FIFO frames. 4-10: frequency-weighted. 6 recommended."
         aria-label="Advanced temporal averaging">
         <optgroup label="Basic">
@@ -314,12 +316,14 @@
     <div class="tab hidden" data-tab="rta">
       <div class="row">
         <span class="rowLabel">Temporal averaging</span>
-        <select id="avgBasicSettings" class="sel avgBasic" aria-label="Basic temporal averaging">
+        <select id="avgBasicSettings" class="sel avgBasic"
+          data-setting="averaging" data-avg-view="basic" aria-label="Basic temporal averaging">
           <option value="slow">Slow</option>
           <option value="fast">Fast</option>
           <option value="inf">Inf — Infinite</option>
         </select>
-        <select id="avgAdvSettings" class="sel avgAdv" aria-label="Advanced temporal averaging">
+        <select id="avgAdvSettings" class="sel avgAdv"
+          data-setting="averaging" data-avg-view="advanced" aria-label="Advanced temporal averaging">
           <optgroup label="Basic">
             <option value="slow">Slow</option>
             <option value="fast">Fast</option>
