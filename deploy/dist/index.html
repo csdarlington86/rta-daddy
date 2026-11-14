@@ -90,7 +90,9 @@
         <h3>Fractional-octave RTA</h3>
         <p>1 octave down to 1/48 oct, drawn as bars or a line, with peak hold, track peak,
            a Y offset and temporal averaging: Fast, Slow and Inf in Easy mode, with the
-           full 1–10 scale in Advanced. Touch the plot and
+           full 1–10 scale plus Custom time constants in Advanced. An optional live trace can show the latest raw
+           frame faintly behind the average, and a settling indicator shows when it is
+           steady enough to capture. Touch the plot and
            the readout follows the line exactly &mdash; 213 Hz reads 213, not the nearest band
            centre. Tap once for marker A, again for B, drag either line, then zoom in on just
            that span.</p>
@@ -144,8 +146,9 @@
       <li><b>Set banding and averaging.</b> Both live in the top bar &mdash; 1/3 or 1/6 octave
           for tonal balance, 1/24 or 1/48 for detail. Averaging starts with Slow, Fast and
           Inf; switch Settings mode to Advanced for the full 1–10 scale, where 1–3 are quick
-          FIFO frame averages, 4–10 weight the lows longer than the highs, and <b>6</b> is the
-          recommended general starting point.</li>
+          FIFO frame averages, 4–10 weight the lows longer than the highs, <b>6</b> is the
+          recommended general starting point, and <b>Custom</b> takes your own low/high or
+          whole-band time constants.</li>
       <li><b>Read the plots.</b> Spectrograph on top with frequency across the bottom and time
           rising; RTA underneath. Touch or drag across either plot for a frequency and level
           readout &mdash; the spectrograph also says how far back the row under your finger is.</li>

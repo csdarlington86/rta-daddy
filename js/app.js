@@ -33,6 +33,15 @@
      exponential averages: the low end gets a longer time constant than the
      high end, which keeps room modes readable without smearing cymbals. */
   const AVG_FIFO_FRAMES = { 1: 2, 2: 4, 3: 8 };
+  /* Mode 2 is the quick FIFO. At the normal 30 Hz analysis cadence it stays
+     exactly four frames; at lower cadences the FIFO window is time-weighted
+     so its roughly 133 ms response does not stretch to four slow frames.
+     Both the recent median and the current gap must be slow: a lone stall
+     must not divert the frames that follow it. */
+  const AVG_FAST_TARGET_S = AVG_FIFO_FRAMES[2] / 30;
+  const AVG_FAST_EXACT_MIN = 3.5;
+  const AVG_FAST_DT_MIN_S = AVG_FAST_TARGET_S / AVG_FAST_EXACT_MIN;
+  const AVG_FAST_DT_SAMPLES = 5;
   const AVG_WEIGHTED = {
     4: { lo: 0.25, hi: 0.05 },
     5: { lo: 0.50, hi: 0.08 },
@@ -46,25 +55,41 @@
      names so Advanced can show the exact choice; the retired none setting was
      no averaging and is closest to scale 1. */
   const AVG_EFFECTIVE = { fast: '2', slow: '6' };
+  const CUSTOM_MS_MIN = 10;
+  const CUSTOM_MS_MAX = 60000;
+  const CUSTOM_MS_KEYS = ['customLowMs', 'customHighMs', 'customAllMs'];
 
   function normalizeAveraging(v) {
     const s = String(v ?? '');
     if (s === 'none') return '1';
     if (s === 'infinite') return 'inf';
-    if (s === 'fast' || s === 'slow' || s === 'inf') return s;
+    if (s === 'custom' || s === 'fast' || s === 'slow' || s === 'inf') return s;
     const n = Number(s);
     return Number.isInteger(n) && n >= 1 && n <= 10 ? String(n) : '6';
+  }
+
+  function normalizeCustomMs(v, fallback) {
+    const n = Number(v);
+    return Number.isFinite(n) ? clamp(Math.round(n), CUSTOM_MS_MIN, CUSTOM_MS_MAX) : fallback;
+  }
+
+  function normalizeCustomAvgState() {
+    S.customAvgType = S.customAvgType === 'flat' ? 'flat' : 'split';
+    S.customLowMs = normalizeCustomMs(S.customLowMs, DEFAULTS.customLowMs);
+    S.customHighMs = normalizeCustomMs(S.customHighMs, DEFAULTS.customHighMs);
+    S.customAllMs = normalizeCustomMs(S.customAllMs, DEFAULTS.customAllMs);
   }
 
   function effectiveAveraging(v = S.averaging) {
     return AVG_EFFECTIVE[v] || v;
   }
 
-  /* Fast is the FIFO group, Slow is weighted, and Inf stays Inf. The saved
-     advanced value itself is never rewritten. */
+  /* Fast is the FIFO group, Slow is weighted, and Inf stays Inf. Custom is
+     reported as Custom instead of being mislabelled Slow while its curve is
+     still driving the average. The saved advanced value is never rewritten. */
   function basicAveraging() {
     const e = effectiveAveraging();
-    if (e === 'inf') return e;
+    if (e === 'inf' || e === 'custom') return e;
     return AVG_FIFO_FRAMES[e] ? 'fast' : 'slow';
   }
 
@@ -74,6 +99,10 @@
   /* ---------------- state ---------------- */
   const DEFAULTS = {
     averaging: '6',
+    customAvgType: 'split',
+    customLowMs: 1000,
+    customHighMs: 120,
+    customAllMs: 1000,
     banding: 3,
     scale: 'third',
     display: 'bars',
@@ -94,6 +123,7 @@
     trim: 0,
     trimB: 0,
     showGrid: true,
+    showLiveTrace: false,
     targetPreset: 'none',
     targetOffset: 0,
     micId: '',
@@ -119,6 +149,7 @@
      averaging select. */
   const savedAvg = S.averaging;
   S.averaging = normalizeAveraging(S.averaging);
+  normalizeCustomAvgState();
   if (S.averaging !== savedAvg) saveSettings();
   /* saved settings from an older build have no per-input trims */
   if (!S.trims || typeof S.trims !== 'object') S.trims = {};
@@ -192,6 +223,8 @@
   const roLevel = $('#roLevel');
   const rtaInfo = $('#rtaInfo');
   const specInfo = $('#specInfo');
+  const avgState = $('#avgState');
+  const avgStateText = $('#avgStateText');
   const rewWrap = $('#rewindWrap');
   const rewInput = $('#rewind');
   const rewLabel = $('#rewindLabel');
@@ -201,6 +234,8 @@
   const gate = $('#gate');
   const gateMsg = $('#gateMsg');
   const toastEl = $('#toast');
+  const toastMsg = $('#toastMsg');
+  const toastActionBtn = $('#toastAction');
 
   /* ---------------- audio ---------------- */
   /* Two analysers live in one context so 1+2 can be split off a stereo
@@ -221,7 +256,8 @@
       raw: new Float32Array(0),
       avg: {
         data: null, sum: null, power: null, scratch: null,
-        fifo: null, fifoSum: null, fifoN: 0, fifoPos: 0, n: 0, ready: false
+        fifo: null, fifoSum: null, fifoN: 0, fifoPos: 0, fastDt: [], fastSum: null,
+        n: 0, ready: false, frames: 0, elapsed: 0
       },
       hold: null
     };
@@ -244,14 +280,133 @@
       const a = CH[k].avg;
       a.ready = false;
       a.n = 0;
+      a.frames = 0;
+      a.elapsed = 0;
       a.fifo = null;
       a.fifoSum = null;
       a.fifoN = 0;
       a.fifoPos = 0;
+      a.fastDt = [];
+      a.fastSum = null;
       a.power = null;
       if (a.sum) a.sum.fill(0);
       CH[k].hold = null;
     }
+    settleClear();
+  }
+
+  /* ---------------- averaging stability --------------
+     The indicator looks at the response actually on screen, not the raw FFT:
+     keep a short rolling history of the averaged dB levels, calculate each
+     63 Hz - 4 kHz band's variance over that window, and use the 75th
+     percentile standard deviation. A single moving tone or a dead band then
+     cannot decide the state by itself. This is measurement feedback only; it
+     never feeds back into the averaging code. */
+  const SETTLE_WINDOW_MS = 2400;
+  const SETTLE_MIN_MS = 1800;
+  const SETTLE_MIN_SAMPLES = 18;
+  const SETTLE_ENTER_DB = 0.5;
+  const SETTLE_STAY_DB = 0.8;
+  const SETTLE_HOLD_MS = 1000;
+  const settle = {
+    hist: [], times: [], state: 'idle', settled: false, since: 0,
+    metric: 0, samples: 0
+  };
+  let stableCaptureArmed = false;
+
+  function settleRender() {
+    if (!avgState) return;
+    const visible = running && !S.paused && settle.state !== 'idle';
+    avgState.classList.toggle('hidden', !visible);
+    avgState.classList.toggle('settled', settle.state === 'settled');
+    avgState.dataset.state = settle.state;
+    const txt = settle.state === 'settled' ? 'SETTLED' : 'SETTLING';
+    if (avgStateText && avgStateText.textContent !== txt) avgStateText.textContent = txt;
+    if (!visible) return;
+    const hasMetric = settle.samples >= SETTLE_MIN_SAMPLES;
+    const variance = hasMetric ? settle.metric.toFixed(2) : '—';
+    if (avgState.dataset.variance !== variance) avgState.dataset.variance = variance;
+    avgState.dataset.samples = String(settle.samples);
+    avgState.title = hasMetric
+      ? (settle.state === 'settled' ? 'Average is settled. ' : 'Average is still settling. ') +
+        'Recent per-band variation: ' + variance + ' dB (75th percentile, 63 Hz–4 kHz, ' +
+        (SETTLE_WINDOW_MS / 1000).toFixed(1) + ' s).'
+      : 'Collecting recent per-band variation over ' + (SETTLE_WINDOW_MS / 1000).toFixed(1) + ' s…';
+  }
+
+  function settleClear() {
+    settle.hist.length = 0;
+    settle.times.length = 0;
+    settle.state = 'idle';
+    settle.settled = false;
+    settle.since = 0;
+    settle.metric = 0;
+    settle.samples = 0;
+    settleRender();
+  }
+
+  function settleUpdate(data) {
+    if (!running || S.paused || !data || !data.length || !bands.length) return;
+    if (data.length !== bands.length) { settleClear(); return; }
+    if (settle.hist.length && settle.hist[0].length !== data.length) { settleClear(); return; }
+
+    const now = performance.now();
+    settle.hist.push(Float32Array.from(data));
+    settle.times.push(now);
+    while (settle.times.length > 2 && now - settle.times[0] > SETTLE_WINDOW_MS) {
+      settle.hist.shift();
+      settle.times.shift();
+    }
+    settle.samples = settle.hist.length;
+    const span = settle.times.length ? now - settle.times[0] : 0;
+    if (settle.samples < SETTLE_MIN_SAMPLES || span < SETTLE_MIN_MS) {
+      settle.settled = false;
+      settle.since = 0;
+      settle.metric = 0;
+      settle.state = 'settling';
+      settleRender();
+      return;
+    }
+
+    const idx = [];
+    for (let i = 0; i < bands.length; i++) {
+      if (bands[i].fc >= 63 && bands[i].fc <= 4000) idx.push(i);
+    }
+    if (!idx.length) { settle.state = 'settling'; settleRender(); return; }
+
+    const n = settle.hist.length;
+    const stds = [];
+    for (const i of idx) {
+      let mean = 0;
+      for (const frame of settle.hist) mean += frame[i];
+      mean /= n;
+      let variance = 0;
+      for (const frame of settle.hist) {
+        const d = frame[i] - mean;
+        variance += d * d;
+      }
+      stds.push(Math.sqrt(variance / n));
+    }
+    stds.sort((a, b) => a - b);
+    const p75 = stds[Math.min(stds.length - 1, Math.floor((stds.length - 1) * 0.75))];
+    settle.metric = p75;
+
+    const qualifies = settle.settled ? p75 <= SETTLE_STAY_DB : p75 <= SETTLE_ENTER_DB;
+    if (!qualifies) {
+      settle.settled = false;
+      settle.since = 0;
+    } else if (!settle.settled) {
+      if (!settle.since) settle.since = now;
+      if (now - settle.since >= SETTLE_HOLD_MS) {
+        settle.settled = true;
+        if (stableCaptureArmed && running && !S.paused) {
+          setStableCaptureArmed(false);
+          captureTrace(true);
+        }
+      }
+    }
+    settle.state = settle.settled ? 'settled' : 'settling';
+    settleRender();
   }
 
   /* Time constants are precomputed per band when the averaging mode or the
@@ -260,7 +415,22 @@
   let avgTau = new Float64Array(0);
   function refreshAvgTau() {
     avgTau = new Float64Array(bands.length);
-    const p = AVG_WEIGHTED[effectiveAveraging()];
+    const mode = effectiveAveraging();
+    if (mode === 'custom') {
+      if (S.customAvgType === 'flat') {
+        avgTau.fill(normalizeCustomMs(S.customAllMs, DEFAULTS.customAllMs) / 1000);
+        return;
+      }
+      const lo = normalizeCustomMs(S.customLowMs, DEFAULTS.customLowMs) / 1000;
+      const hi = normalizeCustomMs(S.customHighMs, DEFAULTS.customHighMs) / 1000;
+      const ratio = hi / lo;
+      for (let i = 0; i < bands.length; i++) {
+        const t = clamp(Math.log2(bands[i].fc / FMIN) / SPAN_LOG, 0, 1);
+        avgTau[i] = lo * Math.pow(ratio, t);
+      }
+      return;
+    }
+    const p = AVG_WEIGHTED[mode];
     if (!p) return;
     const ratio = p.hi / p.lo;
     for (let i = 0; i < bands.length; i++) {
@@ -358,10 +528,14 @@
       a.scratch = new Float64Array(n);
       a.ready = false;
       a.n = 0;
+      a.frames = 0;
+      a.elapsed = 0;
       a.fifo = null;
       a.fifoSum = null;
       a.fifoN = 0;
       a.fifoPos = 0;
+      a.fastDt = [];
+      a.fastSum = null;
       a.power = null;
     } else {
       if (!a.sum || a.sum.length !== n) a.sum = new Float64Array(n);
@@ -378,6 +552,38 @@
     }
   }
 
+  function fastWindowFrames(a, dt) {
+    if (!a.fastDt) a.fastDt = [];
+    a.fastDt.push(clamp(dt || 1 / 30, 0.001, 0.25));
+    if (a.fastDt.length > AVG_FAST_DT_SAMPLES) a.fastDt.shift();
+    const sorted = a.fastDt.slice().sort((x, y) => x - y);
+    const median = sorted[Math.floor(sorted.length / 2)];
+    return clamp(AVG_FAST_TARGET_S / median, 1, AVG_FIFO_FRAMES[2]);
+  }
+
+  function fastWeightedInto(a, frames) {
+    const len = a.fifo.length;
+    const n = a.data.length;
+    if (!a.fastSum || a.fastSum.length !== n) a.fastSum = new Float64Array(n);
+    a.fastSum.fill(0);
+    const whole = Math.floor(frames);
+    const partial = frames - whole;
+    let count = whole + (partial > 0.0001 ? 1 : 0);
+    count = Math.max(1, Math.min(count, a.fifoN, len));
+    let total = 0;
+    let slot = (a.fifoPos - 1 + len) % len;
+    for (let k = 0; k < count; k++) {
+      let w = 1;
+      if (k === count - 1 && partial > 0.0001 && k >= whole) w = partial;
+      const frame = a.fifo[slot];
+      for (let i = 0; i < n; i++) a.fastSum[i] += frame[i] * w;
+      total += w;
+      slot = (slot - 1 + len) % len;
+    }
+    const inv = total > 0 ? 1 / total : 1;
+    for (let i = 0; i < n; i++) a.data[i] = powerDb(a.fastSum[i] * inv);
+  }
+
   function powerDb(p) {
     return p > 1e-18 ? 10 * Math.log10(p) : -180;
   }
@@ -388,6 +594,8 @@
   function averageInto(a, raw, dt) {
     const n = raw.length;
     ensureAvg(a, n);
+    a.frames = (a.frames || 0) + 1;
+    a.elapsed = (a.elapsed || 0) + Math.max(0, Number(dt) || 0);
     const power = a.scratch;
     for (let i = 0; i < n; i++) power[i] = Math.pow(10, clampDB(raw[i]) * 0.1);
     const mode = effectiveAveraging();
@@ -423,8 +631,13 @@
       slot.set(power);
       for (let i = 0; i < n; i++) a.fifoSum[i] += power[i];
       a.fifoPos = (a.fifoPos + 1) % len;
-      const inv = 1 / a.fifoN;
-      for (let i = 0; i < n; i++) a.data[i] = powerDb(a.fifoSum[i] * inv);
+      const fastFrames = mode === '2' ? fastWindowFrames(a, dt) : null;
+      if (fastFrames !== null && fastFrames < AVG_FAST_EXACT_MIN && dt > AVG_FAST_DT_MIN_S) {
+        fastWeightedInto(a, fastFrames);
+      } else {
+        const inv = 1 / a.fifoN;
+        for (let i = 0; i < n; i++) a.data[i] = powerDb(a.fifoSum[i] * inv);
+      }
     } else {
       if (!a.power || a.power.length !== n) a.power = Float64Array.from(power);
       else {
@@ -814,6 +1027,31 @@
   }
 
   /* ---------------- traces ---------------- */
+  function traceAveragingMeta(ch, overrides) {
+    const mode = effectiveAveraging();
+    const kind = mode === 'inf' ? 'infinite' : (AVG_FIFO_FRAMES[mode] ? 'fifo' : 'weighted');
+    let timeConstants = null;
+    if (kind === 'weighted' && avgTau.length) {
+      const perBandSeconds = Array.from(avgTau, (v) => +(+v).toFixed(6));
+      timeConstants = {
+        lowSeconds: perBandSeconds[0],
+        highSeconds: perBandSeconds[perBandSeconds.length - 1],
+        perBandSeconds
+      };
+    }
+    const elapsed = overrides && isFinite(overrides.elapsedSeconds)
+      ? overrides.elapsedSeconds : (ch.avg.elapsed || 0);
+    const frames = overrides && isFinite(overrides.frameCount)
+      ? overrides.frameCount : (ch.avg.frames || 0);
+    return {
+      mode,
+      kind,
+      timeConstants,
+      elapsedSeconds: +Math.max(0, elapsed).toFixed(3),
+      frameCount: Math.max(0, Math.round(frames))
+    };
+  }
+
   let traces = loadJSON('rtapro.traces.v1', []);
   if (!Array.isArray(traces)) traces = [];
   let selected = new Set();
@@ -823,24 +1061,84 @@
     try { localStorage.setItem('rtapro.traces.v1', JSON.stringify(traces)); } catch (e) { toast('Storage full — export first'); }
   }
 
-  function captureTrace() {
+  function captureTrace(fromSettled) {
+    /* A manual Capture supersedes any armed wait: one tap must not leave a
+       second automatic capture queued behind it. */
+    const cancelledWait = fromSettled !== true && stableCaptureArmed;
+    if (cancelledWait) setStableCaptureArmed(false);
     /* capture whatever the RTA is showing, so a capture in 1+2 is unambiguous */
     const ch = rtaChan();
     if (!ch.avg.ready) { toast('Start a measurement first'); return; }
     const tag = isDual() ? (S.rtaSource === 'b' ? ' (IN2)' : ' (IN1)') : '';
     const t = {
       id: 't' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-      name: 'Capture ' + (++captureCount) + tag,
+      name: (fromSettled === true ? 'Settled ' : 'Capture ') + (++captureCount) + tag,
       color: TRACE_COLORS[traces.length % TRACE_COLORS.length],
       offset: 0,
       visible: true,
       freqs: bands.map((b) => +b.fc.toFixed(3)),
-      levels: Array.from(ch.avg.data, (v) => +(+v).toFixed(2))
+      levels: Array.from(ch.avg.data, (v) => +(+v).toFixed(2)),
+      averaging: traceAveragingMeta(ch)
     };
     traces.push(t);
     saveTraces();
     renderTraces();
-    toast('Captured ' + t.name);
+    toast((fromSettled === true ? 'Settled · captured ' :
+      (cancelledWait ? 'Wait cancelled · captured ' : 'Captured ')) + t.name);
+  }
+
+  function setStableCaptureArmed(on) {
+    stableCaptureArmed = !!on;
+    const drawerBtn = $('#btnCaptureStable');
+    const mainBtn = $('#btnCaptureStableMain');
+    const title = stableCaptureArmed
+      ? 'Waiting for the average to settle — press to cancel'
+      : 'Wait until the RTA average is settled, then capture it';
+    if (drawerBtn) {
+      drawerBtn.textContent = stableCaptureArmed ? 'Cancel wait' : 'Capture when settled';
+      drawerBtn.classList.toggle('waiting', stableCaptureArmed);
+      drawerBtn.setAttribute('aria-pressed', String(stableCaptureArmed));
+      drawerBtn.title = title;
+    }
+    if (mainBtn) {
+      mainBtn.textContent = stableCaptureArmed ? 'Cancel' : 'When settled';
+      mainBtn.classList.toggle('waiting', stableCaptureArmed);
+      mainBtn.setAttribute('aria-pressed', String(stableCaptureArmed));
+      mainBtn.setAttribute('aria-label', stableCaptureArmed
+        ? 'Cancel waiting to capture when settled'
+        : 'Capture when the average settles');
+      mainBtn.title = title;
+    }
+    const moreStable = $('#btnCaptureStableMore');
+    if (moreStable) {
+      moreStable.textContent = stableCaptureArmed ? 'Cancel wait' : 'When settled';
+      moreStable.classList.toggle('waiting', stableCaptureArmed);
+      moreStable.setAttribute('aria-pressed', String(stableCaptureArmed));
+      moreStable.title = title;
+    }
+    const moreBtn = $('#btnMore');
+    if (moreBtn) {
+      moreBtn.classList.toggle('waiting', stableCaptureArmed);
+      moreBtn.title = stableCaptureArmed
+        ? 'More actions \u2014 waiting for the average to settle'
+        : 'More actions';
+      moreBtn.setAttribute('aria-label', stableCaptureArmed
+        ? 'More actions \u2014 waiting for the average to settle'
+        : 'More actions');
+    }
+  }
+
+  function toggleStableCapture() {
+    if (stableCaptureArmed) {
+      setStableCaptureArmed(false);
+      toast('Stable capture cancelled');
+      return;
+    }
+    if (!running) { toast('Start a measurement first'); return; }
+    if (S.paused) { toast('Resume the measurement first'); return; }
+    if (settle.settled) { captureTrace(true); return; }
+    setStableCaptureArmed(true);
+    toast('Waiting for the average to settle — press Cancel to stop');
   }
 
   function averageSelected() {
@@ -876,7 +1174,7 @@
     if (!ch.avg.ready) { toast('Start a measurement first'); return; }
     const sel = $('#avgSecs');
     const secs = clamp(Number(sel && sel.value) || 10, 1, 300);
-    avgRec = { secs, ms: secs * 1000, t0: performance.now(), sum: null, n: 0 };
+    avgRec = { secs, ms: secs * 1000, t0: performance.now(), sum: null, n: 0, meta: traceAveragingMeta(ch) };
     const b = $('#btnCaptureAvg');
     if (b) { b.textContent = 'Cancel ' + secs + 's'; b.classList.add('warn'); }
     toast('Averaging ' + secs + ' s…');
@@ -905,13 +1203,18 @@
     if (!rec.n || !rec.sum) { toast('No data to average'); return; }
     const tag = isDual() ? (S.rtaSource === 'b' ? ' (IN2)' : ' (IN1)') : '';
     const levels = Array.from(rec.sum, (s) => +(10 * Math.log10(Math.max(s / rec.n, 1e-12))).toFixed(2));
+    const averaging = Object.assign({}, rec.meta, {
+      elapsedSeconds: +((performance.now() - rec.t0) / 1000).toFixed(3),
+      frameCount: rec.n
+    });
     const t = {
       id: 't' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
       name: 'Avg ' + rec.secs + 's ' + (++captureCount) + tag,
       color: TRACE_COLORS[traces.length % TRACE_COLORS.length],
       offset: 0, visible: true,
       freqs: bands.map((b2) => +b2.fc.toFixed(3)),
-      levels
+      levels,
+      averaging
     };
     traces.push(t);
     saveTraces();
@@ -955,10 +1258,29 @@
     return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   }
 
+  function traceAveragingTitle(t) {
+    const a = t.averaging;
+    if (!a) return '';
+    const parts = ['Averaging ' + String(a.mode || '?')];
+    if (a.kind) parts.push(String(a.kind));
+    if (a.timeConstants) {
+      const low = Number(a.timeConstants.lowSeconds);
+      const high = Number(a.timeConstants.highSeconds);
+      if (Number.isFinite(low) && Number.isFinite(high)) parts.push(low + '–' + high + ' s');
+    }
+    const elapsed = Number(a.elapsedSeconds);
+    if (Number.isFinite(elapsed)) parts.push(elapsed.toFixed(1) + ' s');
+    const frames = Number(a.frameCount);
+    if (Number.isFinite(frames)) parts.push(Math.round(frames) + ' frames');
+    return parts.join(' · ');
+  }
+
   function renderTraces() {
     const list = $('#traceList');
     const badge = $('#traceBadge');
     if (badge) badge.textContent = String(traces.length);
+    const moreBadge = $('#traceBadgeMore');
+    if (moreBadge) moreBadge.textContent = String(traces.length);
     if (!traces.length) {
       list.innerHTML = '<p class="empty">No captured traces yet. Hit Capture to store the current response.</p>';
       updateUndoBtn();
@@ -969,6 +1291,7 @@
       const row = document.createElement('div');
       row.className = 'traceRow' + (selected.has(t.id) ? ' sel' : '');
       row.dataset.id = t.id;
+      row.title = traceAveragingTitle(t);
       row.innerHTML =
         '<label><input type="checkbox" class="tShow"' + (t.visible ? ' checked' : '') + '></label>' +
         '<input type="text" class="tName" value="' + esc(t.name) + '" maxlength="28">' +
@@ -1368,6 +1691,11 @@
     ctx.rect(g.x, g.y, g.w, g.h);
     ctx.clip();
 
+    /* the newest un-averaged frame, shown only as a display aid */
+    if (S.showLiveTrace && prim.avg.data && prim.raw.length === bands.length) {
+      drawSeries(ctx, g, bandFc, prim.raw, primColor, 1.5, off, 0, 0.28);
+    }
+
     if (dual) {
       /* the input that is not filling the plot is overlaid as a line, so a
          microphone and a console feed can be read against each other */
@@ -1389,7 +1717,7 @@
     if (dual) drawChannelLegend(ctx, g);
   }
 
-  function drawSeries(ctx, g, freqs, levels, color, thickness, offsetDb, fillAlpha) {
+  function drawSeries(ctx, g, freqs, levels, color, thickness, offsetDb, fillAlpha, strokeAlpha = 1) {
     if (!freqs.length) return;
     ctx.save();
     ctx.beginPath();
@@ -1417,7 +1745,7 @@
         if (first) { ctx.moveTo(x, y); first = false; } else ctx.lineTo(x, y);
       }
     }
-    ctx.globalAlpha = 1;
+    ctx.globalAlpha = strokeAlpha;
     ctx.lineWidth = thickness;
     ctx.lineJoin = 'round';
     ctx.strokeStyle = color;
@@ -2016,7 +2344,8 @@
       rv.classList.toggle('zero', t === 0);
     }
     const rl = $('#railTrimLbl');
-    if (rl) rl.textContent = isDual() ? (S.rtaSource === 'b' ? 'Trim 2' : 'Trim 1') : 'Trim';
+    if (rl) rl.textContent = 'Trim';
+    syncInputSource();
     updateMarkBar();
     syncCurveNote();
     syncSeg('display', S.display);
@@ -2026,13 +2355,21 @@
     syncSeg('uiMode', S.uiMode);
     syncSeg('eqSmooth', S.eqSmooth);
     syncSeg('eqFormat', S.eqFormat);
+    syncCustomAvg();
     applyUiTip();
   }
 
+  function syncCustomAvg() {
+    const box = $('#customAvgBox');
+    if (!box) return;
+    box.classList.toggle('hidden', effectiveAveraging() !== 'custom');
+    box.dataset.mode = S.customAvgType === 'flat' ? 'flat' : 'split';
+  }
+
   function syncSeg(name, value) {
-    const seg = $('.seg[data-seg="' + name + '"]');
-    if (!seg) return;
-    $$('.segBtn', seg).forEach((b) => b.classList.toggle('active', b.dataset.value === value));
+    $$('.seg[data-seg="' + name + '"]').forEach((seg) => {
+      $$('.segBtn', seg).forEach((b) => b.classList.toggle('active', b.dataset.value === value));
+    });
   }
 
   /* Easy keeps only the controls a live user reaches for; Advanced reveals the
@@ -2078,7 +2415,16 @@
         rewound = 0;
         rewInput.max = String(Math.max(1, S.specHistory - 1));
         break;
-      case 'averaging': refreshAvgTau(); resetAvg(); break;
+      case 'averaging':
+      case 'customAvgType':
+      case 'customLowMs':
+      case 'customHighMs':
+      case 'customAllMs':
+        if (k === 'averaging' || effectiveAveraging() === 'custom') {
+          refreshAvgTau();
+          resetAvg();
+        }
+        break;
       case 'peakHold': CH.a.hold = null; CH.b.hold = null; break;
       case 'trim':
       case 'trimB':
@@ -2102,6 +2448,7 @@
     /* keep the spectrograph window at least 6 dB wide, whichever end is dragged */
     if (k === 'specMin') v = Math.min(v, S.specMax - 6);
     else if (k === 'specMax') v = Math.max(v, S.specMin + 6);
+    if (CUSTOM_MS_KEYS.indexOf(k) >= 0) v = normalizeCustomMs(v, S[k]);
     S[k] = v;
     if (k === 'trim' || k === 'trimB') {
       (k === 'trimB' ? S.trimsB : S.trims)[S.micId || 'default'] = v;
@@ -2113,15 +2460,20 @@
 
   function bindSettings() {
     $$('[data-setting]').forEach((el) => {
-      const ev = (el.tagName === 'SELECT' || el.type === 'checkbox') ? 'change' : 'input';
+      const customMs = el.type === 'number' && CUSTOM_MS_KEYS.indexOf(el.dataset.setting) >= 0;
+      const ev = (el.tagName === 'SELECT' || el.type === 'checkbox' || customMs) ? 'change' : 'input';
       el.addEventListener(ev, () => {
         const k = el.dataset.setting;
         let v;
         if (el.type === 'checkbox') v = el.checked;
+        else if (el.type === 'number' && el.value.trim() === '') return;
         else if (el.dataset.type === 'number') v = Number(el.value);
         else v = el.value;
         setSetting(k, v);
       });
+      if (customMs) {
+        el.addEventListener('blur', () => { el.value = String(S[el.dataset.setting]); });
+      }
     });
 
     $$('.seg[data-seg]').forEach((seg) => {
@@ -2203,8 +2555,67 @@
   $('#tracesClose').addEventListener('click', closeSheets);
   scrim.addEventListener('click', closeSheets);
 
+  /* Below 520 px the secondary actions move into one overflow menu so the
+     action strip stays on a single row. The primary Capture and Auto Trim
+     controls remain visible. */
+  const moreBtn = $('#btnMore');
+  const moreMenu = $('#moreMenu');
+  function closeMore() {
+    if (!moreMenu || !moreBtn) return;
+    moreMenu.classList.add('hidden');
+    moreMenu.setAttribute('aria-hidden', 'true');
+    moreBtn.setAttribute('aria-expanded', 'false');
+    if (moreMenu.contains(document.activeElement)) moreBtn.focus();
+  }
+  function setMoreOpen(on) {
+    if (!moreMenu || !moreBtn) return;
+    const open = !!on && innerWidth <= 520;
+    moreMenu.classList.toggle('hidden', !open);
+    moreMenu.setAttribute('aria-hidden', String(!open));
+    moreBtn.setAttribute('aria-expanded', String(open));
+    if (open) {
+      const first = moreMenu.querySelector('.moreItem');
+      if (first) setTimeout(() => first.focus(), 0);
+    }
+  }
+  if (moreBtn && moreMenu) {
+    moreBtn.addEventListener('click', () => setMoreOpen(moreMenu.classList.contains('hidden')));
+    document.addEventListener('click', (e) => {
+      if (moreMenu.classList.contains('hidden')) return;
+      if (moreBtn.contains(e.target) || moreMenu.contains(e.target)) return;
+      closeMore();
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && !moreMenu.classList.contains('hidden')) {
+        e.preventDefault();
+        closeMore();
+        moreBtn.focus();
+      }
+    });
+    window.addEventListener('resize', () => { if (innerWidth > 520) closeMore(); });
+  }
+  const stableMoreBtn = $('#btnCaptureStableMore');
+  if (stableMoreBtn) stableMoreBtn.addEventListener('click', () => {
+    closeMore();
+    toggleStableCapture();
+  });
+  const tracesMoreBtn = $('#btnTracesMore');
+  if (tracesMoreBtn) tracesMoreBtn.addEventListener('click', () => {
+    closeMore();
+    renderTraces();
+    openSheet(tracesEl);
+  });
+  const settingsMoreBtn = $('#btnSettingsMore');
+  if (settingsMoreBtn) settingsMoreBtn.addEventListener('click', () => {
+    closeMore();
+    openSheet(sheet);
+  });
+
   /* ---------------- capture / traces buttons ---------------- */
-  $('#btnCapture2').addEventListener('click', captureTrace);
+  $$('#btnCapture2, #btnCaptureMain').forEach((b) =>
+    b.addEventListener('click', () => captureTrace(false)));
+  $$('#btnCaptureStable, #btnCaptureStableMain').forEach((b) =>
+    b.addEventListener('click', toggleStableCapture));
   const capAvgBtn = $('#btnCaptureAvg');
   if (capAvgBtn) capAvgBtn.addEventListener('click', captureAverage);
   const avgSecsSel = $('#avgSecs');
@@ -2242,6 +2653,7 @@
       averaging: S.averaging,
       traces: traces.map((t) => ({
         name: t.name, color: t.color, offset: t.offset, visible: t.visible,
+        averaging: t.averaging || null,
         freqs: t.freqs, levels: t.levels
       }))
     };
@@ -2390,6 +2802,7 @@
         color: t.color && /^#[0-9a-f]{6}$/i.test(t.color) ? t.color : TRACE_COLORS[traces.length % TRACE_COLORS.length],
         offset: Number(t.offset) || 0,
         visible: t.visible !== false,
+        averaging: t.averaging && typeof t.averaging === 'object' ? t.averaging : null,
         freqs: t.freqs.map(Number),
         levels: t.levels.map(Number)
       });
@@ -2405,11 +2818,12 @@
   let setups = loadJSON('rtapro.setups.v1', []);
   if (!Array.isArray(setups)) setups = [];
 
-  const SETUP_KEYS = ['averaging', 'banding', 'scale', 'display', 'gridDb', 'lineThickness',
-    'traceThickness', 'trackPeak', 'peakHold', 'yOffsetEnabled', 'offset', 'specMin', 'specMax',
-    'specHistory', 'specSmooth', 'dbTop', 'dbBottom', 'fft', 'trim', 'trimB', 'showGrid',
-    'targetPreset', 'targetOffset', 'chanMode', 'rtaSource', 'specSource', 'markA', 'markB',
-    'split', 'theme', 'eqRef', 'eqSmooth', 'eqFormat'];
+  const SETUP_KEYS = ['averaging', 'customAvgType', 'customLowMs', 'customHighMs', 'customAllMs',
+    'banding', 'scale', 'display', 'gridDb', 'lineThickness', 'traceThickness', 'trackPeak',
+    'peakHold', 'yOffsetEnabled', 'offset', 'specMin', 'specMax', 'specHistory', 'specSmooth',
+    'dbTop', 'dbBottom', 'fft', 'trim', 'trimB', 'showGrid', 'showLiveTrace', 'targetPreset',
+    'targetOffset', 'chanMode', 'rtaSource', 'specSource', 'markA', 'markB', 'split', 'theme',
+    'eqRef', 'eqSmooth', 'eqFormat'];
 
   function saveSetups() {
     try { localStorage.setItem('rtapro.setups.v1', JSON.stringify(setups)); }
@@ -2457,6 +2871,7 @@
     const wasMode = S.chanMode;
     for (const k of SETUP_KEYS) if (k in s.values) S[k] = s.values[k];
     S.averaging = normalizeAveraging(S.averaging);
+    normalizeCustomAvgState();
     rebuildBands();
     forEachAnalyser((an) => { an.fftSize = S.fft; });
     if (audio.a1) CH.a.freq = new Float32Array(audio.a1.frequencyBinCount);
@@ -2500,6 +2915,8 @@
        state label and the rewind bar keep describing the old session */
     if (running) applyPaused(false);
     syncValues();
+    applyUiMode();
+    applyTheme();
     renderTraces();
     updateUndoBtn();
     if (running && !demoOn) restartInput();
@@ -2555,6 +2972,10 @@
     $('#railPause').title = S.paused ? 'Resume' : 'Pause';
     $('#railPause').setAttribute('aria-pressed', String(S.paused));
     updateState();
+    if (!running || S.paused) {
+      settleClear();
+      if (stableCaptureArmed) setStableCaptureArmed(false);
+    }
   }
 
   function togglePause() {
@@ -2643,10 +3064,9 @@
     const key = activeTrimKey();
     if (S[key] === 0) return;
     setSetting(key, 0);
-    toast('Trim reset to 0 dB');
+    toast('Input ' + (key === 'trimB' ? 2 : 1) + ' trim reset to 0 dB');
   });
-  const autoBtn = $('#btnAutoLevel2');
-  if (autoBtn) autoBtn.addEventListener('click', autoLevel);
+  $$('#btnAutoLevel2, #btnAutoTrimMain').forEach((b) => b.addEventListener('click', autoLevel));
 
   /* Infinite averaging and a peak-hold trace both keep data until something
      clears it. Live work needs that without changing the averaging mode or
@@ -2751,11 +3171,34 @@
 
   /* ---------------- toast ---------------- */
   let toastTimer = 0;
-  function toast(msg) {
-    toastEl.textContent = msg;
+  let toastAction = null;
+  function hideToast() {
+    clearTimeout(toastTimer);
+    toastEl.classList.add('hidden');
+    toastAction = null;
+    if (toastActionBtn) toastActionBtn.classList.add('hidden');
+  }
+  function toast(msg, action) {
+    if (toastMsg) toastMsg.textContent = msg;
+    else toastEl.textContent = msg;
+    toastAction = action || null;
+    toastEl.classList.toggle('warn', !!(action && action.warn));
+    if (toastActionBtn) {
+      toastActionBtn.textContent = toastAction ? toastAction.label : '';
+      toastActionBtn.title = toastAction ? (toastAction.title || toastAction.label) : '';
+      toastActionBtn.classList.toggle('hidden', !toastAction);
+    }
     toastEl.classList.remove('hidden');
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => toastEl.classList.add('hidden'), 1900);
+    toastTimer = setTimeout(hideToast, toastAction ? 6500 : 1900);
+  }
+  if (toastActionBtn) {
+    toastActionBtn.addEventListener('click', () => {
+      const action = toastAction;
+      if (!action) return;
+      hideToast();
+      action.run();
+    });
   }
 
   /* ---------------- auto level ----------------
@@ -2763,6 +3206,9 @@
      So this does not make the input hotter, it moves the trace to where you
      can read it by changing Input Trim, and says so plainly. */
   let autoProbe = 0;
+  let autoUndo = null;
+  const autoButtons = $$('#btnAutoLevel2, #btnAutoTrimMain');
+  const AUTO_SIGNAL_FLOOR = -170;
 
   /* Rail stepper: one decibel per tap. Auto Trim handles the coarse move.
      The rail always trims the input the RTA is showing, which is input 1
@@ -2772,12 +3218,58 @@
   }
   function activeTrim() { return S[activeTrimKey()]; }
 
+  /* The RTA can show one input or both. The trim always follows the input
+     the RTA is reading, so name that target everywhere the trim appears. */
+  function trimTarget() {
+    const dual = isDual();
+    const key = activeTrimKey();
+    const input = key === 'trimB' ? 2 : 1;
+    return {
+      dual,
+      input,
+      short: (dual ? '1+2\u00b7' : '') + 'IN' + input,
+      full: (dual ? '1+2 overlay \u2014 ' : '') +
+        'Auto Trim adjusts Input ' + input + ' trim'
+    };
+  }
+
+  function syncInputSource() {
+    const t = trimTarget();
+    $$('[data-trim-source]').forEach((el) => {
+      el.textContent = t.short;
+      el.title = t.full;
+      el.setAttribute('aria-label', t.full);
+    });
+    const rv = $('#railTrimVal');
+    if (rv) {
+      rv.title = 'Input ' + t.input + ' trim \u2014 tap to reset to 0 dB';
+      rv.setAttribute('aria-label', 'Input ' + t.input + ' trim, tap to reset');
+    }
+    const up = $('#railTrimUp');
+    if (up) {
+      up.title = 'Increase Input ' + t.input + ' trim 1 dB';
+      up.setAttribute('aria-label', 'Increase Input ' + t.input + ' trim');
+    }
+    const down = $('#railTrimDown');
+    if (down) {
+      down.title = 'Decrease Input ' + t.input + ' trim 1 dB';
+      down.setAttribute('aria-label', 'Decrease Input ' + t.input + ' trim');
+    }
+    const autoTitle = 'Auto gain trim \u2014 adjusts Input ' + t.input + ' trim' +
+      (t.dual ? ' (1+2 overlay)' : '');
+    $$('#btnAutoLevel2, #btnAutoTrimMain').forEach((b) => {
+      b.title = autoTitle;
+      b.setAttribute('aria-label', 'Auto Trim \u2014 adjusts Input ' + t.input + ' trim');
+    });
+  }
+
   function nudgeTrim(step) {
     const key = activeTrimKey();
+    const input = key === 'trimB' ? 2 : 1;
     const cur = S[key];
     const next = clamp(cur + step, -24, 24);
     if (next === cur) {
-      toast(cur > 0 ? 'Trim already at +24 dB' : 'Trim already at -24 dB');
+      toast('Input ' + input + ' trim already at ' + (cur > 0 ? '+24' : '-24') + ' dB');
       return;
     }
     setSetting(key, next);
@@ -2794,32 +3286,80 @@
     syncValues();
   }
 
-  function autoLevelApply(samples) {
+  function setAutoReading(on) {
+    autoButtons.forEach((b) => {
+      b.classList.toggle('reading', on);
+      b.disabled = on;
+      b.setAttribute('aria-busy', String(on));
+      b.textContent = on ? 'Reading\u2026' : 'Auto Trim';
+    });
+  }
+
+  function signedTrim(v) {
+    return (v > 0 ? '+' : '') + v + ' dB';
+  }
+
+  function undoAutoTrim() {
+    const u = autoUndo;
+    if (!u) return;
+    autoUndo = null;
+    const id = S.micId || 'default';
+    const input = u.key === 'trimB' ? 2 : 1;
+    if (u.id !== id || S[u.key] !== u.applied) {
+      toast('Input ' + input + ' trim changed since Auto Trim \u2014 undo unavailable');
+      return;
+    }
+    (u.key === 'trimB' ? S.trimsB : S.trims)[id] = u.before;
+    S[u.key] = u.before;
+    saveSettings();
+    syncValues();
+    resetAvg();
+    toast('Auto Trim undone \u00b7 Input ' + input + ' trim ' + signedTrim(u.before));
+  }
+
+  function autoLevelApply(samples, key, id) {
+    const input = key === 'trimB' ? 2 : 1;
+    const inputName = 'Input ' + input;
     const vals = samples.filter((v) => isFinite(v)).sort((a, b) => a - b);
-    if (!vals.length) { toast('No signal to level'); return; }
+    if (!vals.length || vals[vals.length - 1] < AUTO_SIGNAL_FLOOR) {
+      toast('No signal on ' + inputName + ' \u2014 check the input');
+      return;
+    }
     /* median of the per-frame maxima: one transient should not set it */
     const peak = vals[vals.length >> 1];
-    const key = activeTrimKey();
     const oldTrim = S[key];
     const target = clamp(S.dbTop - 6, S.dbBottom + 6, 0);
     const next = clamp(Math.round(oldTrim + (target - peak)), -24, 24);
-    if (next === oldTrim) { toast('Level already fits the plot'); return; }
+    const atLimit = next === 24 || next === -24;
+    if (next === oldTrim) {
+      toast(atLimit
+        ? inputName + ' trim already at ' + signedTrim(next) + ' limit \u2014 lower the input'
+        : inputName + ' level already fits the plot');
+      return;
+    }
     S[key] = next;
-    (key === 'trimB' ? S.trimsB : S.trims)[S.micId || 'default'] = next;
+    (key === 'trimB' ? S.trimsB : S.trims)[id] = next;
     saveSettings();
     syncValues();
     /* the running average and peak hold still carry the old trim */
     resetAvg();
-    toast('Trim ' + (next > 0 ? '+' : '') + next + ' dB \u00b7 peak now ' +
-      Math.round(peak - oldTrim + next) + ' dBFS');
+    autoUndo = { key, id, before: oldTrim, applied: next };
+    toast(inputName + ' trim ' + (oldTrim > 0 ? '+' : '') + oldTrim + ' \u2192 ' + signedTrim(next) +
+      ' \u00b7 peak now ' + Math.round(peak - oldTrim + next) + ' dBFS' +
+      (atLimit ? ' \u00b7 ' + signedTrim(next) + ' limit reached' : ''), {
+      label: 'Undo', run: undoAutoTrim, warn: atLimit
+    });
   }
 
   function autoLevel() {
     const src = rtaChan();
     if (!running || !src.avg.data) { toast('Start a measurement first'); return; }
     if (autoProbe) return;   /* ignore a double tap while it is sampling */
+    const key = activeTrimKey();
+    const id = S.micId || 'default';
     autoProbe = performance.now();
-    toast('Reading level\u2026');
+    setAutoReading(true);
+    toast('Reading ' + (key === 'trimB' ? 'Input 2' : 'Input 1') + ' level\u2026');
     const samples = [];
     const iv = setInterval(() => {
       const d = rtaChan().avg.data;
@@ -2831,7 +3371,12 @@
       if (performance.now() - autoProbe >= 800) {
         clearInterval(iv);
         autoProbe = 0;
-        autoLevelApply(samples);
+        setAutoReading(false);
+        if (activeTrimKey() !== key || (S.micId || 'default') !== id) {
+          toast('Input changed \u2014 Auto Trim cancelled');
+          return;
+        }
+        autoLevelApply(samples, key, id);
       }
     }, 60);
   }
@@ -3532,6 +4077,7 @@
     }
     const data = rtaChan().avg.data;
     if (!data) return;
+    settleUpdate(data);
     avgAccumulate();
     const sp = specChan().avg.data;
     if (sp) specPush(sp, dt);

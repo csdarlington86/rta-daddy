@@ -23,7 +23,17 @@ const TYPES = {
 
 const server = http.createServer((req, res) => {
   const url = decodeURIComponent(req.url.split('?')[0]);
+  /* The hosted Worker answers the counter without storage as hits: null.
+     Mirror that here so local landing-page testing has no console 404. */
+  if (url === '/api/hits' || url === '/api/hits/') {
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+    res.end('{"hits":null}');
+    return;
+  }
   let rel = url === '/' ? '/index.html' : url;
+  /* Match the hosted Worker's extensionless routes: /app serves app.html,
+     including links from the landing page during local testing. */
+  if (!path.extname(rel)) rel += '.html';
   const file = path.normalize(path.join(root, rel));
   if (!file.startsWith(root)) { res.writeHead(403).end('forbidden'); return; }
 

@@ -41,11 +41,21 @@ pushing to GitHub does not deploy it by itself.
   scale in Advanced mode:
   - **Fast** — quick FIFO averaging (scale setting 2)
   - **Slow** — steadier frequency-weighted averaging (scale setting 6)
-  - **1–3** — FIFO averages of 2, 4 or 8 FFT analysis frames; the oldest frame drops out
+  - **1–3** — quick FIFO averages. **1** and **3** average 2 and 8 FFT analysis frames;
+    **2** holds a 133 ms window (four frames at the normal 30 Hz cadence, time-weighted at
+    lower frame rates). The oldest frame drops out
   - **4–10** — frequency-weighted exponential averaging, with longer time constants
     in the lows and shorter ones in the highs
   - **6** — the recommended general starting point
+  - **Custom** — set in Advanced only: enter low/high time constants (the same
+    log-frequency blend as 4–10) or one whole-band time constant; 10–60,000 ms.
+    Easy shows **Custom** while that curve is active instead of pretending it is Slow
   - **Inf** — infinite running average, with a one-tap reset
+- **Live trace behind average** — an optional Advanced display aid that draws the latest raw
+  frame faintly behind the averaged RTA; it does not change the average, captures or exports
+- **Settling indicator + stable capture** — a SETTLING/SETTLED chip beside Averaging uses the
+  recent per-band variance of the displayed average (63 Hz–4 kHz, 75th percentile over 2.4 s);
+  the header's **When settled** control or the Traces drawer can wait for that state and capture automatically
 - **Easy and Advanced modes** — Easy is the default and shows only banding, averaging,
   input, peak hold, display and setups; Advanced reveals FFT size, levels, trims, spectrograph
   detail, target curves and EQ export. Nothing is duplicated, and the choice is remembered;
@@ -71,7 +81,9 @@ pushing to GitHub does not deploy it by itself.
   chip, so a silent input or the demo signal is never mistaken for a real measurement; an
   **OFFLINE** chip appears when the app is running from its cache
 - **Averaged reference captures** — record 3, 10, 30 or 60 seconds of the running average into a
-  stored trace, for comparing a mic against a console feed over time
+  stored trace, for comparing a mic against a console feed over time; every capture records
+  its effective averaging mode, applied time constants, active elapsed time and frame count
+  in the trace and JSON export
 - **Markers on the spectrograph** — the same draggable A/B lines cross the waterfall, and the
   spectrograph readout lists the level at each marker for the selected moment
 - **Daylight theme** — a high-contrast light palette (canvas included) for outdoor use, remembered
@@ -172,6 +184,7 @@ node --check js/app.js
 node --check sw.js
 node --check deploy/worker.js
 node tools/build-dist.js             # rebuild deploy/dist and validate references
+node tools/test-capture-cancel.js    # headless browser regression; needs Chrome or Edge
 
 git add -A
 git commit -m "Describe the change"
@@ -179,7 +192,7 @@ git push                             # public GitHub repository
 git push origin master               # external F: backup
 ```
 
-Bump `CACHE` in `sw.js` (`rta-daddy-v25` at the time of writing) whenever the app
+Bump `CACHE` in `sw.js` (`rta-daddy-v40` at the time of writing) whenever the app
 shell changes, or installed PWAs may keep serving the old bundle.
 
 Or do the checks, build, commit, and both backup pushes in one command:
@@ -212,8 +225,10 @@ on every push to `master`; it does not publish the site.
 | Drag the bar between plots | Resize the split |
 | Rail **Graph** / **RTA** | Full-screen that plot (tap again to restore) |
 | Rail **Pause** | Freeze, then use the rewind slider on the spectrograph |
-| Rail **Trim + / −** | Nudge the input trim 1 dB per tap; tap the number to reset it to 0 |
-| Header **Capture** | Store the current trace |
+| Rail **Trim + / −** | Nudge the active input's trim 1 dB per tap; the rail badge names the input, and tapping the number resets it to 0 |
+| Header **Capture** | Store the current trace without opening the drawer |
+| Header **When settled** | Wait for the average to settle, then capture; tap again to cancel |
+| Header **More** (phones under 520 px) | Compact overflow menu for When settled, Traces and Settings; Capture becomes a camera icon. The selectors and level/peak readouts share the first row so the action strip stays on a second row |
 | Header **Traces** | Show, rename, offset, colour, average, delete |
 
 `?demo=1` starts a synthetic signal so the UI can be exercised without a microphone.
@@ -259,7 +274,9 @@ coherence, no subtraction. It is a display-grade analyzer, not a certified instr
 - The browser has no analog gain, so a live input usually reads lower than a hardware RTA: the
   numbers are dBFS, not dB SPL, and the ~12 dB of auto gain control a browser would normally
   apply is deliberately skipped. **Auto Trim** (top bar, or Settings → RTA → Input trim) sets
-  Input Trim so the loudest band lands ~6 dB below the top of the plot. It moves the reading,
+  the trim for the input the RTA is reading so the loudest band lands ~6 dB below the top of
+  the plot. The source badge beside it shows the active source (`IN1`, `IN2` or `1+2·IN1`),
+  so in 1+2 overlay mode it is clear which input's trim will move. It moves the reading,
   not the signal — signal-to-noise is unchanged.
 
 ---

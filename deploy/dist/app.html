@@ -37,15 +37,16 @@
       <span class="ctlLabel">Averaging:</span>
       <select id="avgSelBasic" class="sel avgSel avgBasic"
         data-setting="averaging" data-avg-view="basic"
-        title="Slow is steady, Fast is responsive, Inf keeps a running average."
+        title="Slow is steady, Fast is responsive, Inf keeps a running average. Custom is active from Advanced."
         aria-label="Basic temporal averaging">
         <option value="slow">Slow</option>
         <option value="fast">Fast</option>
         <option value="inf">Inf</option>
+        <option value="custom">Custom</option>
       </select>
       <select id="avgSel" class="sel avgSel avgAdv"
         data-setting="averaging"
-        title="Full scale: Slow/Fast, 1-10, and Inf. 1-3: FIFO frames. 4-10: frequency-weighted. 6 recommended."
+        title="Full scale: Slow/Fast, 1-10, Inf and Custom. 1-3: FIFO frames; 2 holds a 133 ms window at low frame rates. 4-10: frequency-weighted. 6 recommended."
         aria-label="Advanced temporal averaging">
         <optgroup label="Basic">
           <option value="slow">Slow</option>
@@ -64,7 +65,10 @@
           <option value="10">10 · Max</option>
         </optgroup>
         <option value="inf">Inf · Infinite</option>
+        <option value="custom">Custom</option>
       </select>
+      <span id="avgState" class="avgState hidden" role="status" aria-live="polite"
+        aria-atomic="true" title="Waiting for averaged data"><i aria-hidden="true"></i><span id="avgStateText">SETTLING</span></span>
     </div>
 
     <div class="readouts">
@@ -86,10 +90,46 @@
 
     <div class="spacer"></div>
 
-    <button id="btnTraces" class="btn" title="Captured traces">Traces <span id="traceBadge" class="badge">0</span></button>
-    <button id="btnSettings" class="btn iconOnly" title="Settings" aria-label="Settings">
-      <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M19.14 12.94a7.6 7.6 0 0 0 .06-.94 7.6 7.6 0 0 0-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.62l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.3 7.3 0 0 0-1.62-.94l-.36-2.54A.5.5 0 0 0 13.9 2h-3.8a.5.5 0 0 0-.5.42l-.36 2.54c-.58.24-1.12.55-1.62.94l-2.39-.96a.5.5 0 0 0-.6.22L2.71 8.48a.5.5 0 0 0 .12.62l2.03 1.58c-.04.31-.06.62-.06.94s.02.63.06.94l-2.03 1.58a.5.5 0 0 0-.12.62l1.92 3.32c.13.23.4.32.6.22l2.39-.96c.5.39 1.04.7 1.62.94l.36 2.54c.04.24.25.42.5.42h3.8c.25 0 .46-.18.5-.42l.36-2.54c.58-.24 1.12-.55 1.62-.94l2.39.96c.2.1.47.01.6-.22l1.92-3.32a.5.5 0 0 0-.12-.62l-2.03-1.58ZM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2Z"/></svg>
-    </button>
+    <div class="topActions">
+      <div class="seg quickMode" data-seg="uiMode" role="group" aria-label="Settings mode">
+        <button class="segBtn" type="button" data-value="easy">Easy</button>
+        <button class="segBtn" type="button" data-value="advanced">Advanced</button>
+      </div>
+      <div class="autoTrimCtl">
+        <button id="btnAutoTrimMain" class="btn" type="button"
+          title="Auto gain trim — set input trim so the loudest band fits the plot">Auto Trim</button>
+        <span id="autoTrimSrc" class="trimSource" data-trim-source
+          title="Active input">IN1</span>
+      </div>
+
+      <div class="captureActions" role="group" aria-label="Capture">
+        <button id="btnCaptureMain" class="btn" type="button"
+          title="Capture the current response now">
+          <svg class="capIcon" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M9 4 7.5 6H5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-2.5L15 4H9Zm3 5a4.5 4.5 0 1 1 0 9 4.5 4.5 0 0 1 0-9Zm0 2a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5Z"/></svg>
+          <span class="capLabel">Capture</span>
+        </button>
+        <button id="btnCaptureStableMain" class="btn" type="button" aria-pressed="false"
+          aria-label="Capture when the average settles"
+          title="Wait until the average is settled, then capture it">When settled</button>
+      </div>
+
+      <button id="btnTraces" class="btn" title="Captured traces">Traces <span id="traceBadge" class="badge">0</span></button>
+      <button id="btnSettings" class="btn iconOnly" title="Settings" aria-label="Settings">
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M19.14 12.94a7.6 7.6 0 0 0 .06-.94 7.6 7.6 0 0 0-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.62l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.3 7.3 0 0 0-1.62-.94l-.36-2.54A.5.5 0 0 0 13.9 2h-3.8a.5.5 0 0 0-.5.42l-.36 2.54c-.58.24-1.12.55-1.62.94l-2.39-.96a.5.5 0 0 0-.6.22L2.71 8.48a.5.5 0 0 0 .12.62l2.03 1.58c-.04.31-.06.62-.06.94s.02.63.06.94l-2.03 1.58a.5.5 0 0 0-.12.62l1.92 3.32c.13.23.4.32.6.22l2.39-.96c.5.39 1.04.7 1.62.94l.36 2.54c.04.24.25.42.5.42h3.8c.25 0 .46-.18.5-.42l.36-2.54c.58-.24 1.12-.55 1.62-.94l2.39.96c.2.1.47.01.6-.22l1.92-3.32a.5.5 0 0 0-.12-.62l-2.03-1.58ZM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2Z"/></svg>
+      </button>
+      <button id="btnMore" class="btn iconOnly moreBtn" type="button"
+        aria-label="More actions" aria-haspopup="menu" aria-expanded="false" title="More actions">
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><g fill="currentColor"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></g></svg>
+      </button>
+    </div>
+    <div id="moreMenu" class="moreMenu hidden" role="menu" aria-label="More actions" aria-hidden="true">
+      <button id="btnCaptureStableMore" class="moreItem" type="button" role="menuitem"
+        aria-pressed="false">When settled</button>
+      <button id="btnTracesMore" class="moreItem" type="button" role="menuitem">
+        Traces <span id="traceBadgeMore" class="badge">0</span>
+      </button>
+      <button id="btnSettingsMore" class="moreItem" type="button" role="menuitem">Settings</button>
+    </div>
   </header>
 
   <main id="plots">
@@ -168,7 +208,11 @@
     </button>
     <div class="railGap"></div>
     <div class="railTrim">
-      <span class="lbl" id="railTrimLbl">Trim</span>
+      <span class="railTrimHead">
+        <span class="lbl" id="railTrimLbl">Trim</span>
+        <span id="railTrimSrc" class="trimSource railTrimSource" data-trim-source
+          title="Active input">IN1</span>
+      </span>
       <button class="railTrimVal" id="railTrimVal" title="Input trim — tap to reset to 0 dB" aria-label="Input trim, tap to reset">0</button>
       <button class="railBtn railStep" id="railTrimUp" title="Input trim up 1 dB" aria-label="Increase input trim">
         <span class="ico big" aria-hidden="true">+</span>
@@ -317,10 +361,13 @@
       <div class="row">
         <span class="rowLabel">Temporal averaging</span>
         <select id="avgBasicSettings" class="sel avgBasic"
-          data-setting="averaging" data-avg-view="basic" aria-label="Basic temporal averaging">
+          data-setting="averaging" data-avg-view="basic"
+          title="Custom is active from Advanced; switch to Advanced to edit its curve."
+          aria-label="Basic temporal averaging">
           <option value="slow">Slow</option>
           <option value="fast">Fast</option>
           <option value="inf">Inf — Infinite</option>
+          <option value="custom">Custom (Advanced)</option>
         </select>
         <select id="avgAdvSettings" class="sel avgAdv"
           data-setting="averaging" aria-label="Advanced temporal averaging">
@@ -341,16 +388,61 @@
             <option value="10">10 — Maximum averaging</option>
           </optgroup>
           <option value="inf">Inf — Infinite running average</option>
+          <option value="custom">Custom — edit times below</option>
         </select>
       </div>
       <p class="fine avgBasic">Fast responds quickest, Slow is a steadier average, and Inf
-        keeps a running average until Reset averaging. Switch Settings mode to Advanced
-        for the full 1–10 scale.</p>
-      <p class="fine avgAdv">1–3 are FIFO averages of 2, 4 or 8 FFT analysis frames; the
-        oldest frame drops out as a new one arrives. 4–10 are frequency-weighted: lows
-        average longer than highs. <b>6</b> is the recommended general starting point;
-        <b>Inf</b> keeps a running average until Reset averaging.</p>
+        keeps a running average until Reset averaging. <b>Custom</b> means a custom curve is
+        active; switch Settings mode to Advanced to edit its times. The full 1–10 scale is
+        also in Advanced.</p>
+      <p class="fine avgAdv">1 and 3 are FIFO averages of 2 and 8 FFT analysis frames. 2 holds a
+        133 ms window — four frames at the normal 30 Hz cadence, time-weighted at lower
+        frame rates — and the oldest frame drops out as a new one arrives. 4–10 are
+        frequency-weighted: lows average longer than highs. <b>6</b> is the recommended
+        general starting point; <b>Inf</b> keeps a running average until Reset averaging.
+        <b>Custom</b> opens the time-constant controls below.</p>
+      <div id="customAvgBox" class="customAvgBox hidden" data-advanced>
+        <div class="row">
+          <span class="rowLabel">Custom shape</span>
+          <select class="sel" id="customAvgType" data-setting="customAvgType" aria-label="Custom averaging shape">
+            <option value="split">Low + high</option>
+            <option value="flat">Whole band</option>
+          </select>
+        </div>
+        <div class="row" data-custom-view="split">
+          <span class="rowLabel">Low time constant</span>
+          <label class="customField">
+            <input type="number" id="customLowMs" data-setting="customLowMs" data-type="number"
+              min="10" max="60000" step="10" inputmode="numeric" aria-label="Low time constant in milliseconds">
+            <span>ms</span>
+          </label>
+        </div>
+        <div class="row" data-custom-view="split">
+          <span class="rowLabel">High time constant</span>
+          <label class="customField">
+            <input type="number" id="customHighMs" data-setting="customHighMs" data-type="number"
+              min="10" max="60000" step="10" inputmode="numeric" aria-label="High time constant in milliseconds">
+            <span>ms</span>
+          </label>
+        </div>
+        <div class="row" data-custom-view="flat">
+          <span class="rowLabel">Whole-band time constant</span>
+          <label class="customField">
+            <input type="number" id="customAllMs" data-setting="customAllMs" data-type="number"
+              min="10" max="60000" step="10" inputmode="numeric" aria-label="Whole-band time constant in milliseconds">
+            <span>ms</span>
+          </label>
+        </div>
+        <p class="fine">10–60,000 ms. Low/high blends across frequency like presets 4–10;
+          whole band applies one time constant to every band.</p>
+      </div>
       <div class="row"><button class="btn wide" id="btnResetAvg">Reset averaging</button></div>
+      <label class="row" data-advanced title="Draw the latest raw frame faintly behind the averaged RTA">
+        <span class="rowLabel">Live trace behind average</span>
+        <span class="switch"><input type="checkbox" id="showLiveTrace" data-setting="showLiveTrace"><i></i></span>
+      </label>
+      <p class="fine" data-advanced>Shows the latest raw frame faintly behind the averaged RTA. The average,
+        captured traces and exports are unchanged.</p>
       <div class="row" data-advanced>
         <span class="rowLabel">Top Level</span>
         <select class="sel" data-setting="dbTop" data-type="number">
@@ -433,7 +525,13 @@
       <input type="range" class="rng" min="-24" max="24" step="1" data-setting="trimB" data-type="number">
       <span class="rowVal" data-for="trimB"></span>
     </div>
-    <div class="row"><button class="btn wide" id="btnAutoLevel2" title="Set the input trim so the live peak sits near the top of the plot">Auto Trim</button></div>
+    <div class="row">
+      <div class="autoTrimCtl autoTrimCtlWide">
+        <button class="btn wide" id="btnAutoLevel2" title="Set the input trim so the live peak sits near the top of the plot">Auto Trim</button>
+        <span id="autoTrimSrcSet" class="trimSource" data-trim-source
+          title="Active input">IN1</span>
+      </div>
+    </div>
     <div class="row"><button class="btn wide" id="btnRefreshInputs">Rescan inputs</button></div>
     <div class="row" data-advanced><button class="btn wide" id="btnSelfTest2">Self-test — input &amp; analyzer accuracy</button></div>
     <p class="fine" data-advanced>Mirrors whatever the OS exposes: built-in mic, headset, or a USB
@@ -553,6 +651,8 @@
   <div class="sheetHead">
     <span class="sheetTitle">Traces</span>
     <button class="btn" id="btnCapture2">Capture</button>
+    <button class="btn" id="btnCaptureStable" aria-pressed="false"
+      title="Wait until the RTA average is settled, then capture it">Capture when settled</button>
     <button class="btn iconOnly" id="tracesClose" aria-label="Close traces">✕</button>
   </div>
   <div class="traceHead">
@@ -637,7 +737,10 @@
   </div>
 </div>
 
-<div id="toast" class="toast hidden"></div>
+<div id="toast" class="toast hidden" role="status" aria-live="polite">
+  <span id="toastMsg"></span>
+  <button id="toastAction" class="toastAction hidden" type="button">Undo</button>
+</div>
 <input type="file" id="fileInput" accept=".json,.csv,.txt" hidden>
 
 <script src="js/app.js"></script>
