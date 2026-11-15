@@ -68,7 +68,11 @@ body{position:fixed;inset:0;overflow:hidden}
 .readouts{display:flex;gap:14px;margin-left:6px}
 .ro{display:flex;align-items:baseline;gap:5px}
 .roK{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.06em}
-.roV{font-variant-numeric:tabular-nums;font-size:14px;color:#f0f0f0}
+.roV{display:inline-block;font-variant-numeric:tabular-nums;font-size:14px;color:#f0f0f0}
+/* Reserve the widest Peak/Level strings so changing values cannot resize the
+   readout row and shift the live meters beside it. */
+#roPeak{min-width:5ch}
+#roLevel{min-width:9ch}
 .spacer{flex:1 1 auto}
 #topbar .topActions{
   display:flex;align-items:center;gap:3px;row-gap:4px;flex:0 0 auto;

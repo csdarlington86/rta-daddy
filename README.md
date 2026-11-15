@@ -185,6 +185,7 @@ node --check sw.js
 node --check deploy/worker.js
 node tools/build-dist.js             # rebuild deploy/dist and validate references
 node tools/test-capture-cancel.js    # headless browser regression; needs Chrome or Edge
+node tools/test-readout-stability.js # headless header layout regression; needs Chrome or Edge
 
 git add -A
 git commit -m "Describe the change"
@@ -192,7 +193,7 @@ git push                             # public GitHub repository
 git push origin master               # external F: backup
 ```
 
-Bump `CACHE` in `sw.js` (`rta-daddy-v40` at the time of writing) whenever the app
+Bump `CACHE` in `sw.js` (`rta-daddy-v41` at the time of writing) whenever the app
 shell changes, or installed PWAs may keep serving the old bundle.
 
 Or do the checks, build, commit, and both backup pushes in one command:
