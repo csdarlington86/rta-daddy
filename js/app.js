@@ -58,6 +58,8 @@
   const CUSTOM_MS_MIN = 10;
   const CUSTOM_MS_MAX = 60000;
   const CUSTOM_MS_KEYS = ['customLowMs', 'customHighMs', 'customAllMs'];
+  const MIC_CAL_KEY = 'rtapro.miccal.v1';
+  const TRIM_CHANNELS_VERSION = 2;
 
   function normalizeAveraging(v) {
     const s = String(v ?? '');
@@ -129,6 +131,7 @@
     micId: '',
     trims: {},
     trimsB: {},
+    trimsM: {},
     chanMode: 'mix',
     rtaSource: 'a',
     specSource: 'a',
@@ -145,15 +148,81 @@
 
   const saved = loadJSON('rtapro.settings.v1', {});
   const S = Object.assign({}, DEFAULTS, saved);
+  let micCalibrations = loadJSON(MIC_CAL_KEY, {});
+  if (!micCalibrations || typeof micCalibrations !== 'object' || Array.isArray(micCalibrations)) micCalibrations = {};
+  // Browser device IDs can be reset or reused. Persist curves, but activate only
+  // after the user loads the curve for the currently selected input this session.
+  const activeMicCalibrations = Object.create(null);
+  let micCalibrationBypassed = false;
+  let lastActiveCalibrationKey = '';
+  let calibrationGuardDismissed = '';
+  let calibrationGuardPreview = null;
+  /* Older builds keyed curves by analyzer slot (":a"/":b") or by device only.
+     Map them to the device's left/right capture channels. */
+  (function migrateMicCalibrationKeys() {
+    let changed = false;
+    const move = (from, to) => {
+      if (from === to || !micCalibrations[from]) return;
+      if (!micCalibrations[to]) micCalibrations[to] = micCalibrations[from];
+      delete micCalibrations[from];
+      changed = true;
+    };
+    for (const key of Object.keys(micCalibrations)) {
+      if (/:a$/.test(key)) move(key, key.slice(0, -2) + ':L');
+      else if (/:b$/.test(key)) move(key, key.slice(0, -2) + ':R');
+    }
+    for (const key of Object.keys(micCalibrations)) {
+      if (!/:L$/.test(key) && !/:R$/.test(key)) move(key, key + ':L');
+    }
+    if (changed) saveMicCalibrations();
+  })();
+  /* Saved settings from older builds used one trim per analyzer lane. The
+     channel-aware format is identified by its trimsM bucket, not by the
+     version marker: an old file may have a marker written by an earlier
+     startup before this migration ran. A missing trimsM therefore still
+     needs the one-time move. */
+  if (!S.trims || typeof S.trims !== 'object' || Array.isArray(S.trims)) S.trims = {};
+  if (!S.trimsB || typeof S.trimsB !== 'object' || Array.isArray(S.trimsB)) S.trimsB = {};
+  S.trimsM = (S.trimsM && typeof S.trimsM === 'object' && !Array.isArray(S.trimsM))
+    ? Object.assign({}, S.trimsM) : {};
+  const channelAware = saved.trimsM && typeof saved.trimsM === 'object' && !Array.isArray(saved.trimsM);
+  if (!channelAware) {
+    const finite = (value) => typeof value === 'number' && isFinite(value);
+    /* a partial old save can have the active lane value without a bucket; a
+       default-zero bucket must not mask that active value */
+    const keepTransient = (store, id, value) => {
+      if (finite(value) && value !== 0 &&
+          (!finite(store[id]) || store[id] === 0)) store[id] = value;
+    };
+    const id = S.micId || 'default';
+    const legacyMode = ['mix', 'L', 'R', 'dual'].indexOf(S.chanMode) >= 0 ? S.chanMode : 'mix';
+    if (legacyMode === 'R' || legacyMode === 'mix') {
+      const to = legacyMode === 'R' ? S.trimsB : S.trimsM;
+      for (const key of Object.keys(S.trims)) {
+        const value = S.trims[key];
+        /* lane A was the active trim in Right and Mix modes; it wins over a
+           stale value left in the target bucket */
+        if (finite(value)) to[key] = value;
+        delete S.trims[key];
+      }
+      keepTransient(to, id, S.trim);
+    } else if (legacyMode === 'dual') {
+      keepTransient(S.trims, id, S.trim);
+      keepTransient(S.trimsB, id, S.trimB);
+    } else {
+      keepTransient(S.trims, id, S.trim);
+    }
+  }
+  if (saved.trimChannelsVersion !== TRIM_CHANNELS_VERSION || !channelAware) {
+    S.trimChannelsVersion = TRIM_CHANNELS_VERSION;
+    saveSettings();
+  }
   /* Persist a migrated value so an installed PWA never opens with an empty
      averaging select. */
   const savedAvg = S.averaging;
   S.averaging = normalizeAveraging(S.averaging);
   normalizeCustomAvgState();
   if (S.averaging !== savedAvg) saveSettings();
-  /* saved settings from an older build have no per-input trims */
-  if (!S.trims || typeof S.trims !== 'object') S.trims = {};
-  if (!S.trimsB || typeof S.trimsB !== 'object') S.trimsB = {};
   /* The band scale is calibrated 11.2 dB hotter than earlier builds, so the
      old untouched default windows have to move with it. Do that once: this
      check used to run on every load and silently undid a deliberate -12 dBFS
@@ -236,12 +305,17 @@
   const toastEl = $('#toast');
   const toastMsg = $('#toastMsg');
   const toastActionBtn = $('#toastAction');
+  const calGuardEl = $('#calGuard');
+  const calGuardTextEl = $('#calGuardText');
+  const calGuardRelinkBtn = $('#btnCalGuardRelink');
+  const calGuardUseBtn = $('#btnCalGuardUse');
+  const calGuardDismissBtn = $('#btnCalGuardDismiss');
 
   /* ---------------- audio ---------------- */
   /* Two analysers live in one context so 1+2 can be split off a stereo
      interface: input 1 is usually the measurement mic, input 2 the console
      feed you want to reference it against. */
-  const audio = { ctx: null, a1: null, a2: null, src: null, stream: null, splitter: null, chans: 1 };
+  const audio = { ctx: null, a1: null, a2: null, src: null, stream: null, splitter: null, chans: 0, deviceId: '', label: '', gen: 0 };
   let running = false;
   let demoOn = false;
   let rewound = 0;
@@ -2345,7 +2419,9 @@
     }
     const rl = $('#railTrimLbl');
     if (rl) rl.textContent = 'Trim';
+    syncTrimUI();
     syncInputSource();
+    syncMicCalibration();
     updateMarkBar();
     syncCurveNote();
     syncSeg('display', S.display);
@@ -2428,9 +2504,12 @@
       case 'peakHold': CH.a.hold = null; CH.b.hold = null; break;
       case 'trim':
       case 'trimB':
-      case 'chanMode':
       case 'rtaSource':
       case 'specSource':
+        resetAvg();
+        break;
+      case 'chanMode':
+        applyStoredTrim();
         resetAvg();
         break;
       case 'targetPreset':
@@ -2451,7 +2530,7 @@
     if (CUSTOM_MS_KEYS.indexOf(k) >= 0) v = normalizeCustomMs(v, S[k]);
     S[k] = v;
     if (k === 'trim' || k === 'trimB') {
-      (k === 'trimB' ? S.trimsB : S.trims)[S.micId || 'default'] = v;
+      setStoredTrim(S.micId || 'default', trimTargetForSlot(k === 'trimB' ? 'b' : 'a'), v);
     }
     applyEffect(k);
     syncValues();
@@ -2895,6 +2974,7 @@
        trims cannot write into the defaults table */
     S.trims = {};
     S.trimsB = {};
+    S.trimsM = {};
     traces = [];
     selected.clear();
     lastDeleted = null;
@@ -3063,8 +3143,9 @@
   $('#railTrimVal').addEventListener('click', () => {
     const key = activeTrimKey();
     if (S[key] === 0) return;
+    const target = trimTargetForSlot(key === 'trimB' ? 'b' : 'a');
     setSetting(key, 0);
-    toast('Input ' + (key === 'trimB' ? 2 : 1) + ' trim reset to 0 dB');
+    toast(trimLabel(target) + ' trim reset to 0 dB');
   });
   $$('#btnAutoLevel2, #btnAutoTrimMain').forEach((b) => b.addEventListener('click', autoLevel));
 
@@ -3218,23 +3299,76 @@
   }
   function activeTrim() { return S[activeTrimKey()]; }
 
-  /* The RTA can show one input or both. The trim always follows the input
-     the RTA is reading, so name that target everywhere the trim appears. */
+  /* Trims follow capture channels, not analyzer lanes: Left, Right, and a
+     separate Mix bucket for a summed stereo input. A mono input is channel 1. */
+  function trimTargetForSlot(slot) {
+    const capture = captureChannelForSlot(slot);
+    if (capture) return capture;
+    return slot === 'a' ? 'M' : null;
+  }
+
+  function trimLabel(target) {
+    if (target === 'R') return 'Right channel';
+    if (target === 'M') return 'Mix';
+    return audio.chans === 1 ? 'Channel 1' : 'Left channel';
+  }
+
+  function trimShortLabel(target) {
+    if (target === 'R') return 'R';
+    if (target === 'M') return 'MIX';
+    return audio.chans === 1 ? 'CH1' : 'L';
+  }
+
+  function trimStore(target) {
+    if (target === 'R') return S.trimsB;
+    if (target === 'M') return S.trimsM;
+    return target === 'L' ? S.trims : null;
+  }
+
+  function storedTrim(id, target) {
+    if (!target) return 0;
+    let value = trimStore(target)[id];
+    /* Mix had no separate bucket before capture-channel trims; use the old
+       lane-a value until a mix trim is set explicitly. */
+    if (target === 'M' && (typeof value !== 'number' || !isFinite(value))) value = S.trims[id];
+    return (typeof value === 'number' && isFinite(value)) ? clamp(value, -24, 24) : 0;
+  }
+
+  function setStoredTrim(id, target, value) {
+    const store = trimStore(target);
+    if (store) store[id] = value;
+  }
+
+  /* The RTA can show one input or both. The trim always follows the capture
+     channel the RTA is reading, so name that target everywhere it appears. */
   function trimTarget() {
     const dual = isDual();
-    const key = activeTrimKey();
-    const input = key === 'trimB' ? 2 : 1;
+    const slot = activeTrimKey() === 'trimB' ? 'b' : 'a';
+    const target = trimTargetForSlot(slot) || 'L';
+    const label = trimLabel(target);
     return {
       dual,
-      input,
-      short: (dual ? '1+2\u00b7' : '') + 'IN' + input,
+      target,
+      short: (dual ? '1+2\u00b7' : '') + trimShortLabel(target),
       full: (dual ? '1+2 overlay \u2014 ' : '') +
-        'Auto Trim adjusts Input ' + input + ' trim'
+        'Auto Trim adjusts ' + label.toLowerCase() + ' trim'
     };
+  }
+
+  function syncTrimUI() {
+    const a = trimTargetForSlot('a') || 'L';
+    const b = trimTargetForSlot('b');
+    const labelA = $('#trimLabelA');
+    const labelB = $('#trimLabelB');
+    const rowB = $('#trimRowB');
+    if (labelA) labelA.textContent = trimLabel(a) + ' trim';
+    if (labelB) labelB.textContent = (b ? trimLabel(b) : 'Right channel') + ' trim';
+    if (rowB) rowB.classList.toggle('hidden', !b || b === a);
   }
 
   function syncInputSource() {
     const t = trimTarget();
+    const label = trimLabel(t.target);
     $$('[data-trim-source]').forEach((el) => {
       el.textContent = t.short;
       el.title = t.full;
@@ -3242,47 +3376,46 @@
     });
     const rv = $('#railTrimVal');
     if (rv) {
-      rv.title = 'Input ' + t.input + ' trim \u2014 tap to reset to 0 dB';
-      rv.setAttribute('aria-label', 'Input ' + t.input + ' trim, tap to reset');
+      rv.title = label + ' trim \u2014 tap to reset to 0 dB';
+      rv.setAttribute('aria-label', label + ' trim, tap to reset');
     }
     const up = $('#railTrimUp');
     if (up) {
-      up.title = 'Increase Input ' + t.input + ' trim 1 dB';
-      up.setAttribute('aria-label', 'Increase Input ' + t.input + ' trim');
+      up.title = 'Increase ' + label.toLowerCase() + ' trim 1 dB';
+      up.setAttribute('aria-label', 'Increase ' + label.toLowerCase() + ' trim');
     }
     const down = $('#railTrimDown');
     if (down) {
-      down.title = 'Decrease Input ' + t.input + ' trim 1 dB';
-      down.setAttribute('aria-label', 'Decrease Input ' + t.input + ' trim');
+      down.title = 'Decrease ' + label.toLowerCase() + ' trim 1 dB';
+      down.setAttribute('aria-label', 'Decrease ' + label.toLowerCase() + ' trim');
     }
-    const autoTitle = 'Auto gain trim \u2014 adjusts Input ' + t.input + ' trim' +
+    const autoTitle = 'Auto gain trim \u2014 adjusts ' + label.toLowerCase() + ' trim' +
       (t.dual ? ' (1+2 overlay)' : '');
     $$('#btnAutoLevel2, #btnAutoTrimMain').forEach((b) => {
       b.title = autoTitle;
-      b.setAttribute('aria-label', 'Auto Trim \u2014 adjusts Input ' + t.input + ' trim');
+      b.setAttribute('aria-label', 'Auto Trim \u2014 adjusts ' + label.toLowerCase() + ' trim');
     });
   }
 
   function nudgeTrim(step) {
     const key = activeTrimKey();
-    const input = key === 'trimB' ? 2 : 1;
+    const target = trimTargetForSlot(key === 'trimB' ? 'b' : 'a');
+    const label = trimLabel(target);
     const cur = S[key];
     const next = clamp(cur + step, -24, 24);
     if (next === cur) {
-      toast('Input ' + input + ' trim already at ' + (cur > 0 ? '+24' : '-24') + ' dB');
+      toast(label + ' trim already at ' + (cur > 0 ? '+24' : '-24') + ' dB');
       return;
     }
     setSetting(key, next);
   }
 
-  /* One trim per input device and per channel: a measurement mic on an
+  /* One trim per input device and capture channel: a measurement mic on an
      interface and the tablet's own mic do not need the same number. */
   function applyStoredTrim() {
     const id = S.micId || 'default';
-    const a = S.trims[id];
-    const b = S.trimsB[id];
-    S.trim = (typeof a === 'number' && isFinite(a)) ? clamp(a, -24, 24) : 0;
-    S.trimB = (typeof b === 'number' && isFinite(b)) ? clamp(b, -24, 24) : 0;
+    S.trim = storedTrim(id, trimTargetForSlot('a'));
+    S.trimB = isDual() ? storedTrim(id, trimTargetForSlot('b')) : 0;
     syncValues();
   }
 
@@ -3304,47 +3437,47 @@
     if (!u) return;
     autoUndo = null;
     const id = S.micId || 'default';
-    const input = u.key === 'trimB' ? 2 : 1;
-    if (u.id !== id || S[u.key] !== u.applied) {
-      toast('Input ' + input + ' trim changed since Auto Trim \u2014 undo unavailable');
+    const label = trimLabel(u.target);
+    if (u.id !== id || S[u.key] !== u.applied ||
+        trimTargetForSlot(u.key === 'trimB' ? 'b' : 'a') !== u.target) {
+      toast(label + ' trim changed since Auto Trim \u2014 undo unavailable');
       return;
     }
-    (u.key === 'trimB' ? S.trimsB : S.trims)[id] = u.before;
+    setStoredTrim(u.id, u.target, u.before);
     S[u.key] = u.before;
     saveSettings();
     syncValues();
     resetAvg();
-    toast('Auto Trim undone \u00b7 Input ' + input + ' trim ' + signedTrim(u.before));
+    toast('Auto Trim undone \u00b7 ' + label + ' trim ' + signedTrim(u.before));
   }
 
-  function autoLevelApply(samples, key, id) {
-    const input = key === 'trimB' ? 2 : 1;
-    const inputName = 'Input ' + input;
+  function autoLevelApply(samples, key, id, target) {
+    const label = trimLabel(target);
     const vals = samples.filter((v) => isFinite(v)).sort((a, b) => a - b);
     if (!vals.length || vals[vals.length - 1] < AUTO_SIGNAL_FLOOR) {
-      toast('No signal on ' + inputName + ' \u2014 check the input');
+      toast('No signal on ' + label.toLowerCase() + ' \u2014 check the input');
       return;
     }
     /* median of the per-frame maxima: one transient should not set it */
     const peak = vals[vals.length >> 1];
     const oldTrim = S[key];
-    const target = clamp(S.dbTop - 6, S.dbBottom + 6, 0);
-    const next = clamp(Math.round(oldTrim + (target - peak)), -24, 24);
+    const targetDb = clamp(S.dbTop - 6, S.dbBottom + 6, 0);
+    const next = clamp(Math.round(oldTrim + (targetDb - peak)), -24, 24);
     const atLimit = next === 24 || next === -24;
     if (next === oldTrim) {
       toast(atLimit
-        ? inputName + ' trim already at ' + signedTrim(next) + ' limit \u2014 lower the input'
-        : inputName + ' level already fits the plot');
+        ? label + ' trim already at ' + signedTrim(next) + ' limit \u2014 lower the input'
+        : label + ' level already fits the plot');
       return;
     }
     S[key] = next;
-    (key === 'trimB' ? S.trimsB : S.trims)[id] = next;
+    setStoredTrim(id, target, next);
     saveSettings();
     syncValues();
     /* the running average and peak hold still carry the old trim */
     resetAvg();
-    autoUndo = { key, id, before: oldTrim, applied: next };
-    toast(inputName + ' trim ' + (oldTrim > 0 ? '+' : '') + oldTrim + ' \u2192 ' + signedTrim(next) +
+    autoUndo = { key, id, target, before: oldTrim, applied: next };
+    toast(label + ' trim ' + (oldTrim > 0 ? '+' : '') + oldTrim + ' \u2192 ' + signedTrim(next) +
       ' \u00b7 peak now ' + Math.round(peak - oldTrim + next) + ' dBFS' +
       (atLimit ? ' \u00b7 ' + signedTrim(next) + ' limit reached' : ''), {
       label: 'Undo', run: undoAutoTrim, warn: atLimit
@@ -3357,9 +3490,10 @@
     if (autoProbe) return;   /* ignore a double tap while it is sampling */
     const key = activeTrimKey();
     const id = S.micId || 'default';
+    const target = trimTargetForSlot(key === 'trimB' ? 'b' : 'a');
     autoProbe = performance.now();
     setAutoReading(true);
-    toast('Reading ' + (key === 'trimB' ? 'Input 2' : 'Input 1') + ' level\u2026');
+    toast('Reading ' + trimLabel(target).toLowerCase() + ' level\u2026');
     const samples = [];
     const iv = setInterval(() => {
       const d = rtaChan().avg.data;
@@ -3372,11 +3506,12 @@
         clearInterval(iv);
         autoProbe = 0;
         setAutoReading(false);
-        if (activeTrimKey() !== key || (S.micId || 'default') !== id) {
+        if (activeTrimKey() !== key || (S.micId || 'default') !== id ||
+            trimTargetForSlot(key === 'trimB' ? 'b' : 'a') !== target) {
           toast('Input changed \u2014 Auto Trim cancelled');
           return;
         }
-        autoLevelApply(samples, key, id);
+        autoLevelApply(samples, key, id, target);
       }
     }, 60);
   }
@@ -3485,6 +3620,7 @@
   }
 
   function connectSource(stream) {
+    const inputGeneration = ++audio.gen;
     audio.stream = stream;
     audio.src = audio.ctx.createMediaStreamSource(stream);
     try {
@@ -3494,8 +3630,23 @@
     /* a mono input has no right channel: picking R or 1+2 would measure
        silence on one side, so fall back to the single channel and say so */
     const track = stream.getAudioTracks()[0];
-    const chans = (track && track.getSettings ? track.getSettings().channelCount : 1) || 1;
+    if (track && track.addEventListener) {
+      track.addEventListener('ended', () => {
+        if (audio.gen !== inputGeneration || !running || demoOn) return;
+        handleInputEnded();
+      });
+    }
+    const settings = track && track.getSettings ? track.getSettings() : {};
+    const chans = settings.channelCount || 1;
     audio.chans = chans;
+    /* Calibration follows the stream that is actually open, not only the
+       remembered selection: a fallback stream may be a different device. */
+    audio.deviceId = settings.deviceId || '';
+    audio.label = (track && track.label) || '';
+    if (audio.deviceId && audio.deviceId !== S.micId) {
+      S.micId = audio.deviceId;
+      saveSettings();
+    }
     const a1 = audio.a1, a2 = audio.a2;
     if (isDual()) {
       if (chans < 2) {
@@ -3523,6 +3674,8 @@
   async function restartInput() {
     if (!audio.ctx || demoOn) return;
     try {
+      /* invalidate the old track's ended listener before stopping it */
+      audio.gen++;
       if (audio.src) { try { audio.src.disconnect(); } catch (e) {} }
       if (audio.splitter) { try { audio.splitter.disconnect(); } catch (e) {} audio.splitter = null; }
       if (audio.stream) audio.stream.getTracks().forEach((t) => t.stop());
@@ -3535,6 +3688,9 @@
     } catch (err) {
       /* the old stream is already gone, so carrying on would show a flat line
          forever: say what happened and hand the start screen back */
+      audio.chans = 0;
+      audio.deviceId = '';
+      audio.label = '';
       running = false;
       S.paused = false;
       updateState();
@@ -3543,6 +3699,18 @@
       gate.classList.remove('hidden');
       applyPaused(false);
     }
+  }
+
+  function handleInputEnded() {
+    if (!running || demoOn) return;
+    /* The stream is gone but the remembered selection is not evidence that
+       the calibration still applies. Fail closed and surface the guard. */
+    audio.deviceId = '';
+    audio.chans = 0;
+    audio.label = '';
+    syncMicCalibration();
+    const hasActive = Object.keys(activeMicCalibrations).some((key) => activeMicCalibrations[key]);
+    toast(hasActive ? 'Input disconnected — calibration cannot be confirmed' : 'Input disconnected', { warn: true });
   }
 
   async function populateInputs() {
@@ -3555,6 +3723,7 @@
       sel.innerHTML = '';
       if (!ins.length) {
         sel.innerHTML = '<option value="">No inputs visible</option>';
+        syncMicCalibration();
         return;
       }
       ins.forEach((d, i) => {
@@ -3566,6 +3735,7 @@
       const keep = ins.some((d) => d.deviceId === S.micId);
       sel.value = keep ? S.micId : ins[0].deviceId;
       if (!keep) { S.micId = sel.value; saveSettings(); }
+      syncMicCalibration();
     } catch (e) { /* enumeration blocked until permission */ }
   }
 
@@ -3589,6 +3759,7 @@
       const ctx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 'interactive' });
       await ctx.resume();
       audio.ctx = ctx;
+      ctx.addEventListener('statechange', () => syncMicCalibration());
 
       const a1 = ctx.createAnalyser();
       a1.fftSize = S.fft;
@@ -3614,6 +3785,7 @@
       gate.classList.add('hidden');
       /* a session paused during an earlier visit must not come back frozen */
       applyPaused(false);
+      syncMicCalibration();
       updateInfo();
       keepAwake();
     } catch (err) {
@@ -3624,7 +3796,9 @@
       audio.a2 = null;
       audio.src = null;
       audio.stream = null;
-      audio.chans = 1;
+      audio.chans = 0;
+      audio.deviceId = '';
+      audio.label = '';
       running = false;
       gateMsg.className = 'gateMsg';
       gateMsg.textContent = micErrorText(err);
@@ -3638,9 +3812,811 @@
 
   $('#micSelect').addEventListener('change', (e) => {
     S.micId = e.target.value;
+    micCalibrationError = '';
     applyStoredTrim();
+    renderMicCalibrationList();
+    syncMicCalibration();
     saveSettings();
     if (running && !demoOn) restartInput();
+  });
+
+  let micCalibrationError = '';
+  function normalizeCalibrationChannel(channel) {
+    return channel === 'L' || channel === 'R' ? channel : null;
+  }
+
+  function calibrationKey(deviceId, channel) {
+    const ch = normalizeCalibrationChannel(channel);
+    return deviceId && ch ? deviceId + ':' + ch : null;
+  }
+
+  function micCalibrationFor(deviceId, channel) {
+    const key = calibrationKey(deviceId, channel);
+    return key ? activeMicCalibrations[key] || null : null;
+  }
+
+  function calibrationDeviceId(streaming = running, demo = demoOn, streamId = audio.deviceId, selected = S.micId) {
+    /* A live stream's own ID is authoritative. If it reports none, fail closed
+       instead of borrowing the curve saved for the selected device. */
+    return streaming && !demo ? (streamId || '') : selected;
+  }
+
+  /* Analyzer lanes a/b are not physical devices. 1+2 maps them to the selected
+     device's left and right channels, Left/Right modes feed either capture
+     channel into lane a, and a stereo Mix sums both channels in lane a. A mono
+     input has one capture channel, so it is always the left/channel-1 curve. */
+  function captureChannelForSlot(slot, mode = S.chanMode, chans = audio.chans) {
+    if (chans === 1) return 'L';
+    if (mode === 'dual') return slot === 'b' ? 'R' : 'L';
+    if (mode === 'L') return 'L';
+    if (mode === 'R') return 'R';
+    return null;
+  }
+
+  function calibrationAppliedTo(channel) {
+    return captureChannelForSlot('a') === channel ||
+      (isDual() && captureChannelForSlot('b') === channel);
+  }
+
+  function syncMicCalibration(message) {
+    const status = $('#micCalibrationStatus');
+    const remove = $('#btnRemoveMicCalibration');
+    if (!status || !remove) return;
+    const channel = normalizeCalibrationChannel($('#micCalibrationChannel').value) || 'L';
+    const deviceId = calibrationDeviceId();
+    const calibration = micCalibrationFor(deviceId, channel);
+    const saved = micCalibrations[calibrationKey(deviceId, channel)];
+    const applyBox = $('#micCalibrationApply');
+    if (applyBox) applyBox.checked = !micCalibrationBypassed;
+    let text = message || micCalibrationError;
+    if (!text) {
+      if (!deviceId) {
+        text = running && !demoOn
+          ? 'The active input does not report a device ID, so calibration is disabled.'
+          : 'Select an input device to load a calibration.';
+      } else if (calibration) {
+        const channelName = channel === 'R' ? 'right channel (2)' : 'left channel (1)';
+        const modeName = { mix: 'Mix', L: 'Left', R: 'Right', dual: '1+2' }[S.chanMode] || S.chanMode;
+        text = calibration.name + ' · ' + calibration.points.length + ' points · ' + channelName +
+          (micCalibrationBypassed ? ' · bypassed'
+            : calibrationAppliedTo(channel) ? '' : ' · not applied in ' + modeName + ' mode');
+      } else if (saved) {
+        text = 'Saved calibration is inactive. Use it for this input, or load a file to replace it.';
+      } else {
+        text = 'No calibration file for this channel.';
+      }
+    }
+    status.textContent = text;
+    status.classList.toggle('calError', !!(message || micCalibrationError));
+    const list = $('#micCalibrationSaved');
+    remove.disabled = !(list && list.value);
+    syncCalibrationBadge();
+    syncCalibrationGuard();
+  }
+
+  function calibrationChannelLabel(channel) {
+    return channel === 'R' ? 'right' : 'left';
+  }
+
+  function currentDeviceLabel() {
+    const sel = $('#micSelect');
+    if (sel && sel.selectedIndex >= 0) {
+      const opt = sel.options[sel.selectedIndex];
+      if (opt && opt.value && opt.value === S.micId && opt.textContent) return opt.textContent;
+    }
+    return audio.label || '';
+  }
+
+  function savedCalibrationLabel(deviceId, entry) {
+    if (entry && entry.label) return entry.label;
+    if (deviceId === S.micId) {
+      const current = currentDeviceLabel();
+      if (current) return current;
+    }
+    return 'Saved input';
+  }
+
+  function renderMicCalibrationList() {
+    const list = $('#micCalibrationSaved');
+    if (!list) return;
+    const previous = list.value;
+    const keys = Object.keys(micCalibrations).filter((key) => /:[LR]$/.test(key));
+    list.innerHTML = '';
+    if (!keys.length) {
+      const empty = document.createElement('option');
+      empty.value = '';
+      empty.textContent = 'No saved calibrations';
+      list.appendChild(empty);
+      list.disabled = true;
+      const useEmpty = $('#btnUseMicCalibration');
+      if (useEmpty) useEmpty.disabled = true;
+      return;
+    }
+    list.disabled = false;
+    keys.sort((a, b) => {
+      const al = savedCalibrationLabel(a.slice(0, -2), micCalibrations[a]) + ' ' + a.slice(-1);
+      const bl = savedCalibrationLabel(b.slice(0, -2), micCalibrations[b]) + ' ' + b.slice(-1);
+      return al.localeCompare(bl);
+    });
+    for (const key of keys) {
+      const entry = micCalibrations[key];
+      const channel = key.slice(-1);
+      const deviceId = key.slice(0, -2);
+      const option = document.createElement('option');
+      option.value = key;
+      option.textContent = savedCalibrationLabel(deviceId, entry) + ' · ' +
+        calibrationChannelLabel(channel) + ' · ' + (entry.name || 'Calibration');
+      list.appendChild(option);
+    }
+    if (keys.indexOf(previous) >= 0) list.value = previous;
+    else {
+      const currentKey = calibrationKey(calibrationDeviceId(), $('#micCalibrationChannel').value);
+      if (currentKey && keys.indexOf(currentKey) >= 0) list.value = currentKey;
+    }
+    const use = $('#btnUseMicCalibration');
+    if (use) use.disabled = !list.value;
+  }
+
+  function syncCalibrationBadge() {
+    const badge = $('#calBadge');
+    if (!badge) return;
+    const deviceId = calibrationDeviceId();
+    const channels = [];
+    if (deviceId) {
+      for (const slot of isDual() ? ['a', 'b'] : ['a']) {
+        const channel = captureChannelForSlot(slot);
+        if (channel && micCalibrationFor(deviceId, channel) && channels.indexOf(channel) < 0) channels.push(channel);
+      }
+    }
+    const sessionActive = Object.keys(activeMicCalibrations).some((key) => activeMicCalibrations[key]);
+    if (demoOn || (!channels.length && !sessionActive)) {
+      badge.classList.add('hidden');
+      return;
+    }
+    if (!channels.length) {
+      /* The banner can be dismissed; this badge stays as the persistent
+         reminder that a session-active curve is not being applied. */
+      badge.textContent = micCalibrationBypassed ? 'CAL OFF' : 'CAL !';
+      badge.classList.toggle('off', micCalibrationBypassed);
+      badge.classList.toggle('inactive', !micCalibrationBypassed);
+      badge.classList.remove('hidden');
+      badge.title = micCalibrationBypassed
+        ? 'Calibration bypassed'
+        : 'Active calibration is not applied to the current input';
+      return;
+    }
+    const names = channels.map((channel) =>
+      calibrationChannelLabel(channel) + ': ' + micCalibrationFor(deviceId, channel).name);
+    badge.textContent = micCalibrationBypassed ? 'CAL OFF' : 'CAL ' + channels.join('+');
+    badge.classList.toggle('off', micCalibrationBypassed);
+    badge.classList.remove('inactive');
+    badge.classList.remove('hidden');
+    badge.title = (micCalibrationBypassed ? 'Calibration bypassed' : 'Calibration active') +
+      ' — ' + names.join(' · ') + (currentDeviceLabel() ? ' · ' + currentDeviceLabel() : '');
+  }
+
+  function rememberActiveCalibration(key) {
+    if (key && activeMicCalibrations[key]) lastActiveCalibrationKey = key;
+  }
+
+  function forgetActiveCalibration(key) {
+    if (lastActiveCalibrationKey !== key) return;
+    const keys = Object.keys(activeMicCalibrations);
+    lastActiveCalibrationKey = keys.length ? keys[keys.length - 1] : '';
+  }
+
+  function activeCalibrationEntry(key) {
+    if (!key || !activeMicCalibrations[key]) return null;
+    const channel = normalizeCalibrationChannel(key.slice(-1));
+    return channel ? { key, channel, entry: activeMicCalibrations[key] } : null;
+  }
+
+  function activeCalibrationEntries(deviceId) {
+    if (!deviceId) return [];
+    return Object.keys(activeMicCalibrations)
+      .filter((key) => key.slice(0, -2) === deviceId && /:[LR]$/.test(key) && activeMicCalibrations[key])
+      .sort((a, b) => a.slice(-1).localeCompare(b.slice(-1)))
+      .map(activeCalibrationEntry)
+      .filter(Boolean);
+  }
+
+  function lastActiveCalibrationDeviceId() {
+    let key = lastActiveCalibrationKey;
+    if (!key || !activeMicCalibrations[key]) {
+      const keys = Object.keys(activeMicCalibrations).filter((k) => activeMicCalibrations[k]);
+      key = keys.length ? keys[keys.length - 1] : '';
+    }
+    return key ? key.slice(0, -2) : '';
+  }
+
+  function calibrationChannelPhrase(channels) {
+    const list = (channels || []).filter((channel, index, all) => all.indexOf(channel) === index);
+    if (!list.length) return 'the selected channel';
+    if (list.length > 1) return 'left and right channels';
+    return calibrationChannelLabel(list[0]) + ' channel';
+  }
+
+  function calibrationModeLabel(mode) {
+    return { mix: 'Mix', L: 'Left', R: 'Right', dual: '1+2' }[mode] || mode;
+  }
+
+  function calibrationModeName() {
+    return calibrationModeLabel(S.chanMode);
+  }
+
+  function analyzedCalibrationChannels() {
+    const channels = [];
+    const slots = isDual() ? ['a', 'b'] : ['a'];
+    for (const slot of slots) {
+      const channel = captureChannelForSlot(slot);
+      if (channel && channels.indexOf(channel) < 0) channels.push(channel);
+    }
+    return channels;
+  }
+
+  function calibrationGuardInfo() {
+    if (micCalibrationBypassed || demoOn) return null;
+    const activeKeys = Object.keys(activeMicCalibrations).filter((key) => activeMicCalibrations[key]);
+    if (!activeKeys.length) return null;
+
+    const currentId = calibrationDeviceId();
+    const analyzed = analyzedCalibrationChannels();
+    const currentEntries = activeCalibrationEntries(currentId);
+    if (currentEntries.some((item) => analyzed.indexOf(item.channel) >= 0)) return null;
+
+    let reason;
+    let sourceEntries;
+    if (!currentId) {
+      reason = 'no-id';
+      sourceEntries = activeCalibrationEntries(lastActiveCalibrationDeviceId());
+    } else if (!currentEntries.length) {
+      reason = 'device';
+      sourceEntries = activeCalibrationEntries(lastActiveCalibrationDeviceId());
+    } else {
+      reason = !analyzed.length && S.chanMode === 'mix'
+        ? 'mix'
+        : audio.chans === 1 && currentEntries.every((item) => item.channel === 'R')
+          ? 'mono'
+          : 'channel';
+      sourceEntries = currentEntries;
+    }
+    if (!sourceEntries.length) sourceEntries = activeKeys.map(activeCalibrationEntry).filter(Boolean);
+    if (!sourceEntries.length) return null;
+
+    const sourceChannels = sourceEntries.map((item) => item.channel);
+    const sourcePhrase = calibrationChannelPhrase(sourceChannels);
+    const sourceLabel = sourceEntries[0].entry && sourceEntries[0].entry.label
+      ? sourceEntries[0].entry.label
+      : 'the previous input';
+    const currentLabel = currentDeviceLabel() || currentId || 'this input';
+    const hasLeft = sourceChannels.indexOf('L') >= 0;
+    const hasRight = sourceChannels.indexOf('R') >= 0;
+    /* 1+2 already analyzes both capture channels, so a left-only or
+       right-only curve applies without narrowing the measurement to one
+       channel. Keep that mode instead of dropping the other input. */
+    const relinkMode = S.chanMode === 'dual' || (hasLeft && hasRight)
+      ? 'dual'
+      : hasRight ? 'R' : 'L';
+    const monoOnlyRight = audio.chans === 1 && !hasLeft;
+    const canRelink = !!(currentId && !monoOnlyRight);
+    const canReopen = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+    const hasSaved = Object.keys(micCalibrations).some((key) => /:[LR]$/.test(key));
+    const modeName = calibrationModeName();
+    let message;
+    if (reason === 'no-id') {
+      message = 'The input is not reporting a device ID, so the active calibration is not applied. ' +
+        'Reopen the input, then relink or use a saved curve.';
+    } else if (reason === 'device') {
+      message = 'Calibration is active for ' + sourceLabel + ' (' + sourcePhrase + '), but the current input is ' +
+        currentLabel + '. It is not applied.';
+    } else if (reason === 'mix') {
+      message = 'Calibration is active for ' + sourcePhrase + ', but stereo Mix sums both channels, so it is not applied. ' +
+        'Relink switches to ' + ({ L: 'Left', R: 'Right', dual: '1+2' }[relinkMode] || modeName) + ' mode.';
+    } else if (reason === 'mono') {
+      message = 'Calibration is active for the right channel, but this input is mono; only a left/channel-1 curve can be applied.';
+    } else {
+      message = 'Calibration is active for ' + sourcePhrase + ', but ' + modeName + ' mode analyzes ' +
+        calibrationChannelPhrase(analyzed) + '. It is not applied.';
+    }
+    const signature = [
+      reason, currentId, S.chanMode, String(audio.chans), analyzed.join(''),
+      sourceEntries.map((item) => item.key).join(','), activeKeys.slice().sort().join(',')
+    ].join('|');
+    return { reason, message, canRelink, canReopen, hasSaved, relinkMode, sourceEntries, currentId, signature };
+  }
+
+  function relinkPreviewMessage(info) {
+    const targetId = calibrationDeviceId();
+    const targetKeys = info.sourceEntries
+      .map((item) => calibrationKey(targetId, item.channel))
+      .filter(Boolean);
+    const replaces = targetKeys.some((key) => !!micCalibrations[key]);
+    const sourceLabel = info.sourceEntries[0].entry && info.sourceEntries[0].entry.label
+      ? info.sourceEntries[0].entry.label
+      : 'the previous input';
+    const targetLabel = currentDeviceLabel() || targetId || 'this input';
+    const channels = info.sourceEntries.map((item) => item.channel);
+    let message = 'Relink ' + sourceLabel + ' (' + calibrationChannelPhrase(channels) + ') to ' +
+      targetLabel + '?';
+    if (replaces) message += ' This replaces the target saved curve for ' +
+      calibrationChannelPhrase(channels) + '.';
+    if (info.relinkMode !== S.chanMode) {
+      message += ' It will switch to ' + calibrationModeLabel(info.relinkMode) + ' mode.';
+    } else {
+      message += ' ' + calibrationModeLabel(S.chanMode) + ' mode stays selected.';
+    }
+    return message;
+  }
+
+  function syncCalibrationGuard() {
+    if (!calGuardEl || !calGuardTextEl || !calGuardRelinkBtn || !calGuardUseBtn || !calGuardDismissBtn) return;
+    const info = calibrationGuardInfo();
+    if (!info) {
+      calibrationGuardDismissed = '';
+      calibrationGuardPreview = null;
+      calGuardEl.classList.add('hidden');
+      calGuardEl.setAttribute('aria-hidden', 'true');
+      return;
+    }
+    if (calibrationGuardPreview && calibrationGuardPreview.signature !== info.signature) {
+      calibrationGuardPreview = null;
+    }
+    if (calibrationGuardDismissed === info.signature && !calibrationGuardPreview) {
+      calGuardEl.classList.add('hidden');
+      calGuardEl.setAttribute('aria-hidden', 'true');
+      return;
+    }
+    const preview = calibrationGuardPreview;
+    if (preview) {
+      calGuardTextEl.textContent = preview.message;
+      calGuardRelinkBtn.textContent = 'Confirm relink';
+      calGuardRelinkBtn.disabled = false;
+      calGuardRelinkBtn.title = 'Replace the target saved curve and apply it to this input';
+      calGuardUseBtn.classList.add('hidden');
+      calGuardDismissBtn.textContent = 'Cancel';
+      calGuardDismissBtn.title = 'Cancel relinking';
+    } else {
+      const reopen = info.reason === 'no-id';
+      calGuardTextEl.textContent = info.message;
+      calGuardRelinkBtn.textContent = reopen ? 'Reopen input' : 'Relink';
+      calGuardRelinkBtn.disabled = reopen ? !info.canReopen : !info.canRelink;
+      calGuardRelinkBtn.title = reopen
+        ? (info.canReopen ? 'Reopen the input and refresh its device ID' : 'Microphone access is unavailable')
+        : info.canRelink
+          ? 'Preview and confirm copying the active calibration to the current input'
+          : 'This mono input cannot apply a right-channel curve';
+      calGuardUseBtn.classList.remove('hidden');
+      calGuardUseBtn.disabled = !info.hasSaved;
+      calGuardUseBtn.title = 'Open saved curves and choose one for this input';
+      calGuardDismissBtn.textContent = 'Continue';
+      calGuardDismissBtn.title = 'Continue measuring without calibration for this input and mode';
+    }
+    calGuardEl.dataset.reason = info.reason;
+    calGuardEl.classList.remove('hidden');
+    calGuardEl.setAttribute('aria-hidden', 'false');
+  }
+
+  function openCalibrationSettings() {
+    if (S.uiMode !== 'advanced') {
+      setSetting('uiMode', 'advanced');
+      dismissUiTip();
+    }
+    const tab = $('.seg[data-seg="tab"] .segBtn[data-tab="input"]');
+    if (tab) tab.click();
+    openSheet(sheet);
+    const list = $('#micCalibrationSaved');
+    if (list) {
+      setTimeout(() => {
+        try { list.focus(); list.scrollIntoView({ block: 'center' }); } catch (e) {}
+      }, 0);
+    }
+  }
+
+  function reopenInputForCalibration() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      toast('This browser cannot reopen the input');
+      return;
+    }
+    if (running && !demoOn && audio.ctx) restartInput();
+    else startMic();
+  }
+
+  function relinkActiveCalibration(info) {
+    const targetId = calibrationDeviceId();
+    if (!info || !info.canRelink || !targetId || !info.sourceEntries.length) {
+      toast('Calibration cannot be relinked to this input');
+      return false;
+    }
+    const previousMode = S.chanMode;
+    const previousLastActiveKey = lastActiveCalibrationKey;
+    const updates = [];
+    for (const source of info.sourceEntries) {
+      const targetKey = calibrationKey(targetId, source.channel);
+      if (!targetKey) continue;
+      updates.push({
+        targetKey,
+        previousSaved: micCalibrations[targetKey],
+        previousActive: activeMicCalibrations[targetKey],
+        source
+      });
+    }
+    if (!updates.length) {
+      toast('Calibration cannot be relinked to this input');
+      return false;
+    }
+    for (const update of updates) {
+      update.installedEntry = {
+        name: update.source.entry.name,
+        points: update.source.entry.points.map((point) => [point[0], point[1]]),
+        label: currentDeviceLabel() || (update.source.entry && update.source.entry.label) || 'Selected input'
+      };
+      micCalibrations[update.targetKey] = update.installedEntry;
+      activeMicCalibrations[update.targetKey] = update.installedEntry;
+    }
+    if (!saveMicCalibrations()) {
+      for (const update of updates) {
+        if (update.previousSaved) micCalibrations[update.targetKey] = update.previousSaved;
+        else delete micCalibrations[update.targetKey];
+        if (update.previousActive) activeMicCalibrations[update.targetKey] = update.previousActive;
+        else delete activeMicCalibrations[update.targetKey];
+      }
+      micCalibrationError = 'Could not relink calibration: device storage is full. Remove another calibration or free storage and try again.';
+      syncMicCalibration(micCalibrationError);
+      return false;
+    }
+
+    micCalibrationBypassed = false;
+    micCalibrationError = '';
+    for (const update of updates) rememberActiveCalibration(update.targetKey);
+    if (info.relinkMode && info.relinkMode !== S.chanMode) setSetting('chanMode', info.relinkMode);
+    const undo = {
+      targetId,
+      previousMode,
+      modeAfter: S.chanMode,
+      previousLastActiveKey,
+      updates
+    };
+    micCalibrationChannel.value = info.sourceEntries[0].channel;
+    renderMicCalibrationList();
+    const list = $('#micCalibrationSaved');
+    if (list) list.value = updates[0].targetKey;
+    calibrationGuardDismissed = '';
+    calibrationGuardPreview = null;
+    syncMicCalibration();
+    resetAvg();
+    toast('Calibration relinked to ' + (currentDeviceLabel() || 'this input') +
+      ' · ' + calibrationChannelPhrase(info.sourceEntries.map((item) => item.channel)), {
+      label: 'Undo',
+      run: () => undoRelink(undo)
+    });
+    return true;
+  }
+
+  function undoRelink(undo) {
+    if (!undo) return;
+    if (calibrationDeviceId() !== undo.targetId) {
+      toast('Cannot undo relink after changing input');
+      return;
+    }
+    if (undo.updates.some((update) =>
+      activeMicCalibrations[update.targetKey] !== update.installedEntry ||
+      micCalibrations[update.targetKey] !== update.installedEntry)) {
+      toast('Cannot undo relink after the calibration changed');
+      return;
+    }
+    for (const update of undo.updates) {
+      if (update.previousSaved) micCalibrations[update.targetKey] = update.previousSaved;
+      else delete micCalibrations[update.targetKey];
+      if (update.previousActive) activeMicCalibrations[update.targetKey] = update.previousActive;
+      else delete activeMicCalibrations[update.targetKey];
+    }
+    if (!saveMicCalibrations()) {
+      for (const update of undo.updates) {
+        micCalibrations[update.targetKey] = update.installedEntry;
+        activeMicCalibrations[update.targetKey] = update.installedEntry;
+      }
+      micCalibrationError = 'Could not undo relink: device storage is full.';
+      syncMicCalibration(micCalibrationError);
+      return;
+    }
+    if (undo.modeAfter !== undo.previousMode && S.chanMode === undo.modeAfter) {
+      setSetting('chanMode', undo.previousMode);
+    }
+    lastActiveCalibrationKey = undo.previousLastActiveKey;
+    calibrationGuardPreview = null;
+    calibrationGuardDismissed = '';
+    micCalibrationError = '';
+    renderMicCalibrationList();
+    syncMicCalibration();
+    resetAvg();
+    toast('Relink undone');
+  }
+
+  function parseMicCalibration(text) {
+    const sourceLines = String(text).replace(/^\uFEFF/, '').split(/\r?\n/);
+    const records = [];
+    let delimiter = null;
+    const numericCell = (value) => /^[-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?$/i.test(value);
+    const parseNumber = (value) => {
+      const normalized = delimiter === ';' ? value.replace(',', '.') : value;
+      return numericCell(normalized) ? Number(normalized) : NaN;
+    };
+    for (const line of sourceLines) {
+      const trimmed = line.trim();
+      if (!trimmed || /^[#*!]/.test(trimmed) || (trimmed[0] === ';' && (trimmed.length === 1 || /\s/.test(trimmed[1])))) continue;
+      const hasDecimalComma = delimiter === ';' && /^[+-]?\d+,\d+(?:e[+-]?\d+)?(?:;|$)/i.test(trimmed);
+      const rowDelimiter = hasDecimalComma ? ';' : trimmed.includes('\t') ? '\t' : trimmed.includes(';') ? ';' : trimmed.includes(',') ? ',' : null;
+      if (delimiter && rowDelimiter && delimiter !== rowDelimiter) {
+        const decimalCommaRow = delimiter === ';' && rowDelimiter === ',' && /^[+-]?\d+,\d+(?:e[+-]?\d+)?(?:;|$)/i.test(trimmed);
+        if (!decimalCommaRow) throw new Error('Mixed column separators; save the file with one delimiter.');
+      }
+      let cells;
+      if (rowDelimiter) {
+        cells = [];
+        let cell = '', quoted = false;
+        for (let i = 0; i < trimmed.length; i++) {
+          const ch = trimmed[i];
+          if (ch === '"') {
+            if (quoted && trimmed[i + 1] === '"') { cell += '"'; i++; }
+            else quoted = !quoted;
+          } else if (ch === rowDelimiter && !quoted) {
+            cells.push(cell.trim()); cell = '';
+          } else cell += ch;
+        }
+        if (quoted) throw new Error('Unclosed quoted field.');
+        cells.push(cell.trim());
+      } else {
+        if (trimmed.includes('"')) throw new Error('Quoted fields require a comma, semicolon or tab delimiter.');
+        cells = trimmed.split(/\s+/);
+      }
+      if (rowDelimiter) delimiter = rowDelimiter;
+      records.push({ cells, original: trimmed });
+    }
+    if (!records.length) throw new Error('File contains no readable rows.');
+
+    const normalize = (s) => s.toLowerCase().replace(/[ _-]+/g, '').replace(/[()\[\]]/g, '');
+    const freqName = (s) => /^(?:freq|frequency|frequencyhz|freqhz|hz)$/.test(normalize(s));
+    const responseName = (s) => {
+      const n = normalize(s);
+      const hasDbUnit = /(?:dbfs|db)$/.test(n);
+      return hasDbUnit && /(?:response|magnitude|level|spl|correction|calibration|sensitivity|^db)/.test(n);
+    };
+    const first = records[0];
+    let freqIndex = -1, responseIndex = -1, dataStart = 0;
+    if (first.cells.some((c) => freqName(c)) || first.cells.some((c) => responseName(c))) {
+      const freqs = [], responses = [];
+      first.cells.forEach((c, i) => { if (freqName(c)) freqs.push(i); if (responseName(c)) responses.push(i); });
+      if (freqs.length !== 1 || responses.length !== 1 || freqs[0] === responses[0]) {
+        throw new Error('Header is ambiguous. It must identify exactly one frequency (Hz) column and one response (dB) column.');
+      }
+      freqIndex = freqs[0]; responseIndex = responses[0]; dataStart = 1;
+    } else {
+      const cells = first.cells;
+      if (!numericCell(cells[0]) && cells.length >= 2) {
+        throw new Error('Unrecognized header. Name columns Frequency (Hz) and Response (dB), or use two numeric columns: frequency, response dB.');
+      }
+      if (cells.length === 2) {
+        freqIndex = 0; responseIndex = 1;
+      } else {
+        throw new Error('Ambiguous columns. Use two numeric columns (frequency Hz, response dB) or a header that names those columns and response units; extra columns require an explicit header.');
+      }
+    }
+
+    const points = [];
+    for (let row = dataStart; row < records.length; row++) {
+      const { cells, original } = records[row];
+      if (cells.length !== records[0].cells.length) {
+        throw new Error('Inconsistent column count on row: ' + original.slice(0, 48));
+      }
+      if (cells.length <= Math.max(freqIndex, responseIndex)) {
+        throw new Error('Row has too few columns: ' + original.slice(0, 48));
+      }
+      const freq = parseNumber(cells[freqIndex]);
+      const response = parseNumber(cells[responseIndex]);
+      if (!Number.isFinite(freq) || !Number.isFinite(response)) {
+        throw new Error('Could not read the selected frequency and response columns in row: ' + original.slice(0, 48));
+      }
+      if (freq <= 0 || freq > 200000 || response < -100 || response > 100) {
+        throw new Error('Frequency must be 0–200 kHz and response must be −100 to +100 dB.');
+      }
+      points.push([freq, response]);
+    }
+    points.sort((a, b) => a[0] - b[0]);
+    if (points.length < 2) throw new Error('No calibration data found. Use at least two frequency,response-dB rows.');
+    for (let i = 1; i < points.length; i++) {
+      if (points[i][0] === points[i - 1][0]) throw new Error('Duplicate frequency ' + points[i][0] + ' Hz.');
+    }
+    return points;
+  }
+
+  function micCalibrationAt(freq, points) {
+    if (!points || points.length < 2 || freq < points[0][0] || freq > points[points.length - 1][0]) return 0;
+    let hi = 1;
+    while (hi < points.length && points[hi][0] < freq) hi++;
+    const a = points[hi - 1], b = points[hi];
+    const t = (Math.log(freq) - Math.log(a[0])) / (Math.log(b[0]) - Math.log(a[0]));
+    return a[1] + (b[1] - a[1]) * t;
+  }
+  function correctMicLevel(level, freq, points) {
+    return level - micCalibrationAt(freq, points);
+  }
+  if (new URLSearchParams(location.search).has('micCalibrationTest')) {
+    window.__micCalibrationTest = { parse: parseMicCalibration, at: micCalibrationAt, correct: correctMicLevel, calibration: micCalibrationFor, appliedCalibration: (deviceId, channel) => micCalibrationBypassed ? null : micCalibrationFor(deviceId, channel), captureChannel: captureChannelForSlot, deviceId: calibrationDeviceId, guard: calibrationGuardInfo, activeCalibrations: () => Object.keys(activeMicCalibrations) };
+  }
+
+  function saveMicCalibrations() {
+    try {
+      const size = new Blob([JSON.stringify(micCalibrations)]).size;
+      if (size > 4 * 1024 * 1024) throw new Error('Calibration storage limit exceeded');
+      localStorage.setItem(MIC_CAL_KEY, JSON.stringify(micCalibrations));
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  const micCalibrationChannel = $('#micCalibrationChannel');
+  micCalibrationChannel.value = 'L';
+  micCalibrationChannel.addEventListener('change', () => {
+    micCalibrationError = '';
+    renderMicCalibrationList();
+    syncMicCalibration();
+  });
+
+  const micCalibrationApply = $('#micCalibrationApply');
+  if (micCalibrationApply) micCalibrationApply.addEventListener('change', () => {
+    micCalibrationBypassed = !micCalibrationApply.checked;
+    resetAvg();
+    syncMicCalibration();
+    toast(micCalibrationBypassed ? 'Microphone calibration bypassed' : 'Microphone calibration applied');
+  });
+
+  const micCalibrationFile = $('#micCalibrationFile');
+  micCalibrationFile.addEventListener('change', async () => {
+    const file = micCalibrationFile.files && micCalibrationFile.files[0];
+    micCalibrationFile.value = '';
+    if (!file) return;
+    try {
+      if (file.size > 2 * 1024 * 1024) throw new Error('File is larger than 2 MiB.');
+      const points = parseMicCalibration(await file.text());
+      const key = calibrationKey(calibrationDeviceId(), micCalibrationChannel.value);
+      if (!key) throw new Error('Select an input device that reports an ID before loading a calibration.');
+      const previous = micCalibrations[key];
+      const previousActive = activeMicCalibrations[key];
+      const wasBypassed = micCalibrationBypassed;
+      micCalibrations[key] = { name: file.name, points, label: currentDeviceLabel() || (previous && previous.label) || 'Selected input' };
+      activeMicCalibrations[key] = micCalibrations[key];
+      micCalibrationBypassed = false;
+      if (!saveMicCalibrations()) {
+        if (previous) micCalibrations[key] = previous;
+        else delete micCalibrations[key];
+        if (previousActive) activeMicCalibrations[key] = previousActive;
+        else delete activeMicCalibrations[key];
+        micCalibrationBypassed = wasBypassed;
+        micCalibrationError = 'Could not save calibration: device storage is full. Remove another calibration or free storage and try again.';
+        syncMicCalibration(micCalibrationError);
+        return;
+      }
+      micCalibrationError = '';
+      rememberActiveCalibration(key);
+      renderMicCalibrationList();
+      const savedList = $('#micCalibrationSaved');
+      if (savedList) savedList.value = key;
+      syncMicCalibration();
+      resetAvg();
+      toast('Microphone calibration loaded for this channel');
+    } catch (err) {
+      micCalibrationError = 'Calibration not loaded: ' + err.message;
+      syncMicCalibration(micCalibrationError);
+    }
+  });
+
+  $('#btnUseMicCalibration').addEventListener('click', () => {
+    const list = $('#micCalibrationSaved');
+    const sourceKey = list && list.value;
+    const source = sourceKey && micCalibrations[sourceKey];
+    const channel = normalizeCalibrationChannel(micCalibrationChannel.value);
+    const targetKey = calibrationKey(calibrationDeviceId(), channel);
+    if (!source) {
+      micCalibrationError = 'Choose a saved calibration first.';
+      syncMicCalibration(micCalibrationError);
+      return;
+    }
+    if (!targetKey) {
+      micCalibrationError = 'Select an input device that reports an ID before using a calibration.';
+      syncMicCalibration(micCalibrationError);
+      return;
+    }
+    const previous = micCalibrations[targetKey];
+    const previousActive = activeMicCalibrations[targetKey];
+    const wasBypassed = micCalibrationBypassed;
+    micCalibrations[targetKey] = {
+      name: source.name,
+      points: source.points.map((point) => [point[0], point[1]]),
+      label: currentDeviceLabel() || (previous && previous.label) || 'Selected input'
+    };
+    activeMicCalibrations[targetKey] = micCalibrations[targetKey];
+    micCalibrationBypassed = false;
+    if (!saveMicCalibrations()) {
+      if (previous) micCalibrations[targetKey] = previous;
+      else delete micCalibrations[targetKey];
+      if (previousActive) activeMicCalibrations[targetKey] = previousActive;
+      else delete activeMicCalibrations[targetKey];
+      micCalibrationBypassed = wasBypassed;
+      micCalibrationError = 'Could not save calibration: device storage is full. Remove another calibration or free storage and try again.';
+      syncMicCalibration(micCalibrationError);
+      return;
+    }
+    micCalibrationError = '';
+    rememberActiveCalibration(targetKey);
+    renderMicCalibrationList();
+    if (list) list.value = targetKey;
+    syncMicCalibration();
+    resetAvg();
+    toast('Calibration assigned to ' + (currentDeviceLabel() || 'this input') +
+      ' · ' + calibrationChannelLabel(channel) + ' channel');
+  });
+
+  $('#btnRemoveMicCalibration').addEventListener('click', () => {
+    const list = $('#micCalibrationSaved');
+    const key = list && list.value;
+    if (!key || !micCalibrations[key]) return;
+    const previous = micCalibrations[key];
+    const previousActive = activeMicCalibrations[key];
+    const removedLabel = savedCalibrationLabel(key.slice(0, -2), previous) +
+      ' · ' + calibrationChannelLabel(key.slice(-1)) + ' channel';
+    delete micCalibrations[key];
+    delete activeMicCalibrations[key];
+    if (!saveMicCalibrations()) {
+      micCalibrations[key] = previous;
+      if (previousActive) activeMicCalibrations[key] = previousActive;
+      micCalibrationError = 'Could not remove calibration from device storage.';
+      syncMicCalibration(micCalibrationError);
+      return;
+    }
+    micCalibrationError = '';
+    forgetActiveCalibration(key);
+    renderMicCalibrationList();
+    syncMicCalibration();
+    resetAvg();
+    toast('Removed ' + removedLabel);
+  });
+
+  calGuardRelinkBtn.addEventListener('click', () => {
+    const info = calibrationGuardInfo();
+    if (!info) return;
+    if (info.reason === 'no-id') {
+      reopenInputForCalibration();
+      return;
+    }
+    if (calibrationGuardPreview) {
+      if (calibrationGuardPreview.signature !== info.signature) {
+        calibrationGuardPreview = null;
+        syncCalibrationGuard();
+        return;
+      }
+      calibrationGuardPreview = null;
+      relinkActiveCalibration(info);
+      return;
+    }
+    calibrationGuardPreview = { signature: info.signature, message: relinkPreviewMessage(info) };
+    syncCalibrationGuard();
+  });
+
+  calGuardUseBtn.addEventListener('click', openCalibrationSettings);
+
+  calGuardDismissBtn.addEventListener('click', () => {
+    if (calibrationGuardPreview) {
+      calibrationGuardPreview = null;
+      syncCalibrationGuard();
+      toast('Relink cancelled');
+      return;
+    }
+    const info = calibrationGuardInfo();
+    if (!info) return;
+    calibrationGuardDismissed = info.signature;
+    syncCalibrationGuard();
+    toast('Continuing without calibration');
   });
 
   $('#btnRefreshInputs').addEventListener('click', async () => {
@@ -3649,7 +4625,10 @@
   });
 
   if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
-    navigator.mediaDevices.addEventListener('devicechange', () => populateInputs());
+    navigator.mediaDevices.addEventListener('devicechange', () => {
+      populateInputs();
+      syncMicCalibration();
+    });
   }
 
   $('#btnDemo').addEventListener('click', () => {
@@ -3657,6 +4636,7 @@
     running = true;
     gate.classList.add('hidden');
     applyPaused(false);
+    syncMicCalibration();
     updateInfo();
     toast('Demo signal — no microphone in use');
   });
@@ -4048,12 +5028,22 @@
     return raw;
   }
 
+  function applyMicCalibrationInPlace(key, raw) {
+    if (micCalibrationBypassed) return raw;
+    const calibration = micCalibrationFor(calibrationDeviceId(), captureChannelForSlot(key));
+    if (!calibration || !calibration.points) return raw;
+    for (let i = 0; i < raw.length; i++) {
+      raw[i] = correctMicLevel(raw[i], bands[i].fc, calibration.points);
+    }
+    return raw;
+  }
+
   function analyzeChannel(key, dt) {
     const ch = CH[key];
     const an = key === 'a' ? audio.a1 : audio.a2;
     if (!an || !ch.freq || !ch.raw.length) return;
     an.getFloatFrequencyData(ch.freq);
-    const raw = applyTrimInPlace(key, bandLevels(ch.freq, ch.raw));
+    const raw = applyTrimInPlace(key, applyMicCalibrationInPlace(key, bandLevels(ch.freq, ch.raw)));
     averageInto(ch.avg, raw, dt);
     updatePeakHold(ch);
   }
@@ -4114,7 +5104,8 @@
   /* ---------------- boot ---------------- */
   applyTheme();
   rebuildBands();
-  syncValues();
+  renderMicCalibrationList();
+  applyStoredTrim();
   renderSetups();
   syncChips();
   const avgSecsSaved = localStorage.getItem('rtapro.avgsecs.v1');

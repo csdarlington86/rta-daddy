@@ -129,7 +129,19 @@ async function evaluate(cdp, sessionId, expression) {
   return result.result.value;
 }
 
-async function openApp({ root, urlPath, args = [], width = 1200, height = 800 }) {
+async function waitForApp(cdp, session, extra = '') {
+  for (let i = 0; i < 120; i++) {
+    try {
+      const ready = await evaluate(cdp, session,
+        "document.readyState === 'complete' && !!document.querySelector('#topbar')" + extra);
+      if (ready) return;
+    } catch (e) { /* navigation may still be replacing the execution context */ }
+    if (i === 119) throw new Error('App did not finish loading');
+    await sleep(100);
+  }
+}
+
+async function openApp({ root, urlPath, args = [], width = 1200, height = 800, initScript = '' }) {
   const server = await startServer(root);
   const port = server.address().port;
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'rta-headless-'));
@@ -174,24 +186,37 @@ async function openApp({ root, urlPath, args = [], width = 1200, height = 800 })
     session = attached.sessionId;
     await cdp.send('Page.enable', {}, session);
     await cdp.send('Runtime.enable', {}, session);
+    if (initScript) {
+      await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: initScript }, session);
+    }
     await cdp.send('Page.navigate', {
       url: 'http://127.0.0.1:' + port + urlPath
     }, session);
 
-    for (let i = 0; i < 120; i++) {
+    await waitForApp(cdp, session);
+
+    const reload = async () => {
+      const token = 'rta-reload-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+      const added = await cdp.send('Page.addScriptToEvaluateOnNewDocument', {
+        source: 'window.__rtaReloadToken = ' + JSON.stringify(token) + ';'
+      }, session);
       try {
-        const ready = await evaluate(cdp, session,
-          "document.readyState === 'complete' && !!document.querySelector('#topbar')");
-        if (ready) break;
-      } catch (e) { /* navigation may still be replacing the execution context */ }
-      if (i === 119) throw new Error('App did not finish loading');
-      await sleep(100);
-    }
+        await cdp.send('Page.reload', {}, session);
+        await waitForApp(cdp, session,
+          ' && window.__rtaReloadToken === ' + JSON.stringify(token));
+      } finally {
+        try {
+          await cdp.send('Page.removeScriptToEvaluateOnNewDocument',
+            { identifier: added.identifier }, session);
+        } catch (e) {}
+      }
+    };
 
     return {
       cdp,
       session,
       evaluate: (expression) => evaluate(cdp, session, expression),
+      reload,
       close
     };
   } catch (err) {

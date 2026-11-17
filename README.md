@@ -64,13 +64,29 @@ pushing to GitHub does not deploy it by itself.
 - **Banding** — 1, 1/3, 1/6, 1/12, 1/24, 1/48 octave; new installs start at 1/3 octave,
   the readable live-sound default, with the finer modes one change away
 - **Two inputs (1+2)** — both channels of a stereo interface are analysed independently and
-  overlaid on the RTA, each with its own trim; the RTA and the spectrograph can each follow
-  either input
+  overlaid on the RTA, with a separate trim for each capture channel; the RTA and the
+  spectrograph can each follow either input
 - **Input self-test** — reports the device name, microphone permission, channels requested and
   delivered, sample rate, bin width and the browser's DSP flags, with a live meter per channel,
   so you can see whether input 2 really carries signal before trusting 1+2; the same panel runs
   three internal reference tones through the analyzer and checks the band level and peak frequency
   against expected values, with no microphone needed
+- **Microphone calibration files** — load a plain-text calibration curve under Settings → Input.
+  CSV, TSV, TXT, `.cal` and `.frd` files are supported when they have a Frequency (Hz) column
+  and one explicitly dB-labeled response column (for example, Response (dB), Mic Response dB,
+  or Sensitivity dB); extra columns are accepted only when the header identifies the intended
+  response column. Ambiguous columns are rejected rather than guessed. Correction is
+  interpolated by log frequency and stored locally by browser-reported input ID and left/right
+  capture channel, matched to the active stream's reported ID; if the active input reports no
+  ID, no calibration is applied. Channel 1 is left and channel 2 is right on the one selected
+  device, not separate devices. A stereo Mix sums both channels, so channel calibration is not
+  applied in Mix mode. Saved curves are labeled by device and channel and can be reassigned to
+  the selected input. Apply calibration bypasses correction for quick A/B, and a CAL badge shows
+  which analyzed channels are corrected. Browsers may reset or reuse input IDs, so this cannot
+  guarantee physical-microphone identity; after browser or device changes, verify the selected
+  input and calibration or remove stale entries. The listed response is subtracted. Values
+  outside the file's frequency range are unchanged. This corrects frequency response only; all
+  readings remain relative dBFS, not SPL. Proprietary/binary formats are not supported.
 - **Calibrated dBFS bands** — 0 dBFS is a full-scale sine: the Blackman-windowed band power is
   corrected by 11.2 dB, so a −20 dBFS tone reads −20.0 dB, white noise rises 3 dB/octave, and
   bands above Nyquist are left empty instead of aliasing into a false top-octave spike
@@ -255,8 +271,8 @@ on every push to `master`; it does not publish the site.
 | Measurement engine | Smaart's own, ~20 years in desktop products | `AnalyserNode` FFT with per-band power summing |
 | Dual channel / transfer function / IR | no | two inputs measured and overlaid as separate RTAs — still no TF, phase or IR |
 
-**Honest gaps:** no SPL (by design), no `.srf` interchange, no data-library workflow, no
-microphone correction curves, no calibrated absolute levels, and the DSP is a browser FFT rather
+**Honest gaps:** no SPL (by design), no `.srf` interchange, no data-library workflow, frequency-only
+microphone correction with no calibrated absolute levels, and the DSP is a browser FFT rather
 than Smaart's engine — expect differences in resolution at the extremes and in low-frequency
 behaviour. The 1+2 overlay is two independent RTAs, not a transfer function: no phase, no
 coherence, no subtraction. It is a display-grade analyzer, not a certified instrument.

@@ -74,6 +74,7 @@
     <div class="readouts">
       <div class="ro"><span class="roK">Peak</span><span class="roV" id="roPeak">—</span></div>
       <div class="ro"><span class="roK">Level</span><span class="roV" id="roLevel">—</span></div>
+      <span id="calBadge" class="chip cal hidden" role="status" aria-live="polite" title="Microphone calibration active">CAL</span>
     </div>
 
     <div class="meters" id="liveMeters" aria-label="Input level">
@@ -129,6 +130,18 @@
         Traces <span id="traceBadgeMore" class="badge">0</span>
       </button>
       <button id="btnSettingsMore" class="moreItem" type="button" role="menuitem">Settings</button>
+    </div>
+    <div id="calGuard" class="calGuard hidden" role="alert" aria-live="polite" aria-atomic="true" aria-hidden="true">
+      <span class="calGuardTag" aria-hidden="true">CAL</span>
+      <span id="calGuardText" class="calGuardText"></span>
+      <span class="calGuardActions">
+        <button id="btnCalGuardRelink" class="btn" type="button"
+          title="Copy the active calibration to the current input and use a matching channel mode">Relink</button>
+        <button id="btnCalGuardUse" class="btn" type="button"
+          title="Open saved curves and choose one for this input">Use saved</button>
+        <button id="btnCalGuardDismiss" class="btn" type="button"
+          title="Continue measuring without calibration for this input and mode">Continue</button>
+      </span>
     </div>
   </header>
 
@@ -262,6 +275,7 @@
       <button class="segBtn" data-tab="spec" role="tab">Spectrograph</button>
       <button class="segBtn" data-tab="rta" role="tab">RTA</button>
       <button class="segBtn" data-tab="setups" role="tab">Setups</button>
+      <button class="segBtn" data-tab="input" role="tab">Input</button>
     </div>
 
     <!-- ---------- TOP GRAPH ---------- -->
@@ -499,13 +513,14 @@
     </div>
 
     <!-- ---------- INPUT ---------- -->
-    <div class="groupTitle">Input</div>
-    <div class="row">
-      <span class="rowLabel">Input device</span>
-      <select class="sel" id="micSelect">
-        <option value="">Start a measurement first</option>
-      </select>
-    </div>
+    <div class="tab hidden" data-tab="input">
+      <div class="groupTitle">Input</div>
+      <div class="row">
+        <span class="rowLabel">Input device</span>
+        <select class="sel" id="micSelect">
+          <option value="">Start a measurement first</option>
+        </select>
+      </div>
     <div class="row" data-advanced>
       <span class="rowLabel">Input channel</span>
       <div class="seg small" data-seg="chan">
@@ -515,13 +530,13 @@
         <button class="segBtn" data-value="dual">1+2</button>
       </div>
     </div>
-    <div class="row" data-advanced>
-      <span class="rowLabel">Input 1 trim</span>
+    <div class="row" id="trimRowA" data-advanced>
+      <span class="rowLabel" id="trimLabelA">Left channel trim</span>
       <input type="range" class="rng" min="-24" max="24" step="1" data-setting="trim" data-type="number">
       <span class="rowVal" data-for="trim"></span>
     </div>
-    <div class="row" data-advanced>
-      <span class="rowLabel">Input 2 trim</span>
+    <div class="row" id="trimRowB" data-advanced>
+      <span class="rowLabel" id="trimLabelB">Right channel trim</span>
       <input type="range" class="rng" min="-24" max="24" step="1" data-setting="trimB" data-type="number">
       <span class="rowVal" data-for="trimB"></span>
     </div>
@@ -537,8 +552,32 @@
     <p class="fine" data-advanced>Mirrors whatever the OS exposes: built-in mic, headset, or a USB
       audio interface. <b>1+2</b> measures both channels of a stereo interface at once —
       a measurement mic on input 1 against a console feed on input 2 — and overlays them
-      on the RTA. Each plot can follow either input, and each input keeps its own trim.
+      on the RTA. Each plot can follow either input, and each capture channel keeps its own trim.
       A mono input shows the same signal on both.</p>
+      <label class="row" data-advanced>
+        <span class="rowLabel">Apply calibration</span>
+        <span class="switch"><input type="checkbox" id="micCalibrationApply" checked><i></i></span>
+      </label>
+      <div class="row" data-advanced>
+        <label class="rowLabel" for="micCalibrationChannel">Calibration channel</label>
+        <select id="micCalibrationChannel" class="sel" aria-label="Microphone calibration channel">
+          <option value="L">Channel 1 (left)</option>
+          <option value="R">Channel 2 (right)</option>
+        </select>
+      </div>
+      <div class="row" data-advanced>
+        <label class="rowLabel" for="micCalibrationFile">Calibration file</label>
+        <input id="micCalibrationFile" class="calFileInput" type="file" accept=".cal,.txt,.csv,.tsv,.frd,text/plain,text/csv" aria-describedby="micCalibrationHelp">
+      </div>
+      <p class="fine" id="micCalibrationStatus" role="status" aria-live="polite" data-advanced>No calibration file for this channel.</p>
+      <div class="row" data-advanced>
+        <label class="rowLabel" for="micCalibrationSaved">Saved curves</label>
+        <select id="micCalibrationSaved" class="sel" aria-label="Saved calibration curves"></select>
+      </div>
+      <div class="row" data-advanced><button class="btn wide" id="btnUseMicCalibration" type="button" disabled>Use for this input</button></div>
+      <div class="row" data-advanced><button class="btn wide" id="btnRemoveMicCalibration" type="button" disabled>Remove selected calibration</button></div>
+      <p class="fine" id="micCalibrationHelp" data-advanced>Choose a text file with a Frequency (Hz) column and one response column explicitly labeled in dB (such as Response (dB), Mic Response dB, or Sensitivity dB). Extra columns are accepted only when the header identifies the response column. The app subtracts the listed response and interpolates by log frequency. Channel 1 is left and channel 2 is right on the one selected input device, not separate devices. In Mix mode a stereo input is summed, so no channel calibration is applied; use Left, Right, or 1+2. Apply calibration bypasses correction for quick A/B; the CAL badge shows which analyzed channels are corrected. Saved curves are labeled by device and channel and can be assigned to the selected input. Storage is matched to the active stream's browser-reported input ID and left/right channel; if the active input reports no ID, no calibration is applied. Browsers may reset or reuse IDs, so this cannot guarantee physical-microphone identity. Verify the selected input and calibration after browser/device changes; stale calibrations may be removed. This corrects frequency response only; readings remain relative dBFS, not SPL.</p>
+    </div>
 
     <div data-advanced>
     <!-- ---------- TARGET CURVE ---------- -->
